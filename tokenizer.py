@@ -8,6 +8,7 @@ import os
 import json
 import regex
 from typing import List, Sequence
+from utils import bytes_to_unicode_map
 
 
 class Pretokenizer:
@@ -49,12 +50,22 @@ class Pretokenizer:
                 inp = pretokenizer.pretokenize(inp)
             return inp
 
+        elif self.type == "ByteLevel":
+            out = []
+            for chunk in inp:
+                out.append(
+                    "".join(bytes_to_unicode_map[a] for a in bytes(chunk, "utf-8"))
+                )
+            return out
+
+        raise NotImplementedError("Encountered unhandled pretokenizer")
+
 
 def BPE_merge(text: str):
     pass
 
 
-def tokenize(prompt):
+def tokenize(prompt, model_path):
     """
     This function needs to eventually fully tokenize the input.
     Pseudocode/necessary steps:
@@ -63,8 +74,12 @@ def tokenize(prompt):
     - Pretokenize the split sections (which should return the chunks of byte-level encoded strings)
     - BPE merge on each individual chunk.
     - Recombine, inserting the lookups from the previously removed special tokens.
-
     """
+    with open(os.path.join(model_path, "tokenizer.json"), "r") as f:
+        tokenizer_config = json.loads(f.read())
+
+    pretokenizer = Pretokenizer(tokenizer_config.get("pre_tokenizer"))
+    return pretokenizer.pretokenize([prompt])
 
 
 if __name__ == "__main__":
@@ -77,15 +92,18 @@ if __name__ == "__main__":
 
     sample = """Hi, how are you?"""
 
-    tokenized = tokenize(sample)
-    tokenizer_config = open(os.path.join(model_path, "tokenizer.json"), "r").read()
-    tokenizer_config = json.loads(tokenizer_config)
+    result = tokenize(sample, model_path)
+    print(result)
 
-    for key in tokenizer_config.keys():
-        s = str(tokenizer_config.get(key))
-        if len(s) > 1000:
-            s = s[:500] + "(truncated)"
-        print(f"{key}:", s)
-        print()
+    # tokenized = tokenize(sample)
+    # tokenizer_config = open(os.path.join(model_path, "tokenizer.json"), "r").read()
+    # tokenizer_config = json.loads(tokenizer_config)
+
+    # for key in tokenizer_config.keys():
+    #    s = str(tokenizer_config.get(key))
+    #    if len(s) > 1000:
+    #        s = s[:500] + "(truncated)"
+    # print(f"{key}:", s)
+    # print()
 
     breakpoint()
