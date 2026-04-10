@@ -9,13 +9,6 @@ import json
 
 from collections import defaultdict
 
-parser = argparse.ArgumentParser(description="Loads model from hf safetensors.")
-parser.add_argument("-m", "--model-path", help="Path to model folder.")
-
-args = parser.parse_args()
-
-model_path = args.model_path
-
 
 def extract_metadata(f):
     """
@@ -31,6 +24,12 @@ def extract_metadata(f):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Loads model from hf safetensors.")
+    parser.add_argument("-m", "--model-path", help="Path to model folder.")
+
+    args = parser.parse_args()
+
+    model_path = args.model_path
 
     # load model safetensors
     f = open(os.path.join(model_path, "model.safetensors"), "rb")
