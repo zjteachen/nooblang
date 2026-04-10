@@ -7,8 +7,10 @@ import argparse
 import os
 import json
 import regex
+import heapq
 from typing import List, Sequence
 from utils import bytes_to_unicode_map
+from dataclasses import dataclass
 
 
 class Pretokenizer:
@@ -61,8 +63,51 @@ class Pretokenizer:
         raise NotImplementedError("Encountered unhandled pretokenizer")
 
 
-def BPE_merge(text: str):
-    pass
+def BPE_merge(text: str, merges: dict, vocab: dict) -> List[int]:
+    @dataclass(order=True)
+    class Node:
+        i: int
+        next: int
+        alive: bool
+        content: str
+        sort_key: int
+
+    nodes = []
+    pq = []
+    for i in range(len(text)):
+        nodes.append(Node(i, i + 1, True, text[i], i))
+
+    merge_to_id = dict((merge.split(" ", 1), i) for i, merge in enumerate(merges))
+    for i in range(1, len(text)):
+        pair = (text[i - 1], text[i])
+        pq_value = (merge_to_id.get(pair) or len(merge_to_id), nodes[i - 1], nodes[i])
+        heapq.heappush(pq, pq_value)
+
+    while pq:
+        merge, node1, node2 = heapq.heappop(pq)
+        # assume valid:
+        if (
+            node1.alive
+            and node2.alive
+            and node1.next == node2.i
+            and merge == merge_to_id.get((node1.content, node2.content))
+        ):
+            node1.content += node2.content
+            node2.alive = False
+            node1.next = node2.next
+            if node1.next < len(text) and nodes[node1.next].alive:
+                new_merge = merge_to_id.get(
+                    (node1.content, nodes[node1.next].content) or len(merge_to_id)
+                )
+
+                heapq.heappush(pq, (new_merge, node1, nodes[node1.next]))
+    ret = []
+    for node in nodes:
+        if node.alive:
+            # Need to handle unk properly here
+            token = vocab.get(node.content) or "UNK"
+            ret.append(token)
+    return ret
 
 
 def tokenize(prompt, model_path):
@@ -92,18 +137,19 @@ if __name__ == "__main__":
 
     sample = """Hi, how are you?"""
 
-    result = tokenize(sample, model_path)
-    print(result)
+    # result = tokenize(sample, model_path)
+    # print(result)
 
     # tokenized = tokenize(sample)
-    # tokenizer_config = open(os.path.join(model_path, "tokenizer.json"), "r").read()
-    # tokenizer_config = json.loads(tokenizer_config)
+    tokenizer_config = open(os.path.join(model_path, "tokenizer.json"), "r").read()
+    tokenizer_config = json.loads(tokenizer_config)
+    tokenizer_config = tokenizer_config.get("model")
 
-    # for key in tokenizer_config.keys():
-    #    s = str(tokenizer_config.get(key))
-    #    if len(s) > 1000:
-    #        s = s[:500] + "(truncated)"
-    # print(f"{key}:", s)
-    # print()
+    for key in tokenizer_config.keys():
+        s = str(tokenizer_config.get(key))
+        if len(s) > 1000:
+            s = s[:500] + "(truncated)"
+        print(f"{key}:", s)
+        print()
 
     breakpoint()
