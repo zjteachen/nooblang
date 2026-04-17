@@ -1,11 +1,13 @@
 """
-Load model weights from HF safetensors format.
+Legacy file: used to manually inspect HF safetensors format for educational purposes.
 """
 
 import argparse
 import re
 import os
 import json
+
+# import torch
 
 from collections import defaultdict
 
@@ -23,6 +25,31 @@ def extract_metadata(f):
     return json_data
 
 
+def extract_tensor_bytes(tensor_data: dict):
+    """
+    Example of extracted structure in Qwen:
+
+    "self_attn.v_proj": {
+        "dtype": "BF16",
+        "shape": [
+            256,
+            1536
+        ],
+        "data_offsets": [
+            559556608,
+            560343040
+        ]
+    }
+    """
+    dtype = tensor_data.get("dtype")
+    shape = tensor_data.get("shape")
+    data_offsets = tensor_data.get("data_offsets")
+    assert (
+        dtype == "BF16" and isinstance(shape, list) and isinstance(data_offsets, list)
+    ), f"Attempted to extract tensor bytes with invalid structure {tensor_data}"
+    breakpoint()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Loads model from hf safetensors.")
     parser.add_argument("-m", "--model-path", help="Path to model folder.")
@@ -38,6 +65,7 @@ if __name__ == "__main__":
     pattern = r"model\.layers\.(\d+)\.(.+)\.(weight|bias)$"
     tensors = defaultdict(lambda: {"weight": [], "bias": []})
     non_matches = []
+
     for key in json_data.keys():
         m = re.match(pattern, key)
         if not m:
@@ -48,5 +76,8 @@ if __name__ == "__main__":
             if kind not in ["weight", "bias"]:
                 print(f"Unexpected kind found in key{key}")
             else:
-                tensors[idx][kind].append(tensortype)
+                tensors[idx][kind].append({tensortype: json_data.get(key)})
+    print("\nEnd of process\n\n")
     print(tensors["0"])
+    sampletensor = tensors["0"]["weight"][0]
+    extract_tensor_bytes(sampletensor.get("input_layernorm"))
