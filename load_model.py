@@ -5,6 +5,7 @@ Loads model and defines model APIs for interactions.
 import os
 import argparse
 import re
+import json
 
 from safetensors import safe_open
 
@@ -33,13 +34,21 @@ class ModelLoader:
 
         for key in self.state_dict.keys():
             mt = re.match(r"model\.layers\.(\d+)", key)
-            if mt and int(mt.group(1)) == layer_index:
-                layer_keys[key] = self.state_dict.get_tensor(key)
+            if mt and int(search := mt.group(1)) == layer_index:
+                layer_keys[key.split(search)[1][1:]] = self.state_dict.get_tensor(key)
 
         for k in layer_keys:
-            print(k, layer_keys[k].shape)
+            # print(k, layer_keys[k].shape)
+            pass
 
         return layer_keys
+
+
+def load_model_config(model_path: str) -> dict:
+    fname = os.path.join(model_path, "config.json")
+    with open(fname, "r") as f:
+        data = json.loads(f.read())
+    return data
 
 
 if __name__ == "__main__":
