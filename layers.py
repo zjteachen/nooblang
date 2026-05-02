@@ -1,5 +1,7 @@
 import argparse
 import torch
+import math
+
 from load_model import ModelLoader, load_model_config
 from torch.nn import functional as F
 from typing import Dict
@@ -13,9 +15,10 @@ class Qwen2Layer:
         self.tensors: Dict[str, torch.Tensor] = tensors
         self.n_heads = n_heads
         self.n_kvheads = n_kvheads
-        # check structure of layer against model config.
 
-    def attention(self, input_seq):
+        # TODO: check structure of layer against model config.
+
+    def attention(self, input_seq, causal_mask):
         #
         B_K = self.tensors.get("self_attn.k_proj.bias")
         W_K = self.tensors.get("self_attn.k_proj.weight")
@@ -24,16 +27,35 @@ class Qwen2Layer:
         B_V = self.tensors.get("self_attn.v_proj.bias")
         W_V = self.tensors.get("self_attn.v_proj.weight")
         W_O = self.tensors.get("self_attn.o_proj.weight")
+        print("Input shape:", input_seq.shape)
 
-        Q = F.linear(input_seq, W_Q, B_Q)
-        K = F.linear(input_seq, W_K, B_K)
-        V = F.linear(input_seq, W_V, B_V)
+        k_dim = 128
 
-        for m in [Q, K, V]:
-            print(m.shape)
-        # split grouped heads into multiple heads.
+        Q = F.linear(input_seq, W_Q, B_Q).view(-1, self.n_heads, k_dim)
+        K = F.linear(input_seq, W_K, B_K).view(-1, self.n_kvheads, k_dim)
+        V = F.linear(input_seq, W_V, B_V).view(-1, self.n_kvheads, k_dim)
+
+        # duplicate kv heads to match Q.
+        assert (
+            self.n_heads % self.n_kvheads == 0
+        ), "# of heads not divisible by # of kvheads"
+        reps = self.n_heads // self.n_kvheads
+        K_rep = torch.repeat_interleave(K, reps, dim=1).transpose(0, 1)
+        V_rep = torch.repeat_interleave(V, reps, dim=1).transpose(0, 1)
+
+        scores = (Q.transpose(0, 1) @ K_rep.transpose(-1, -2)) / math.sqrt(k_dim)
+        scores += causal_mask
+        scores = F.softmax(scores, dim=-1)
+
+        scores = (scores @ V_rep).transpose(0, 1).reshape(-1, k_dim * n_heads)
+        scores = F.linear(scores, W_O)
+        print("scores:", scores.shape)
+        return scores
 
     def mlp(self):
+        pass
+
+    def forward(self, input_seq):
         pass
 
 
@@ -59,4 +81,7 @@ if __name__ == "__main__":
     loader = ModelLoader(model_path)
 
     layer = Qwen2Layer(n_heads, n_kvheads, loader.load_layer(1))
-    layer.attention(sample_input)
+    causal_mask = torch.full((input_length, input_length), float("-inf")).triu(
+        diagonal=1
+    )
+    layer.attention(sample_input, causal_mask)
