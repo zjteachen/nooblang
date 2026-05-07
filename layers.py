@@ -103,8 +103,18 @@ class Qwen2Layer:
 
         return cos_t * tensor + sin_t * rotated_half
 
-    def mlp(self):
-        pass
+    def mlp(self, input_seq):
+        """
+        Feed data through multi-layer perceptron.
+        """
+        mlp_down = self.tensors["mlp.down_proj.weight"]
+        mlp_gate = self.tensors["mlp.gate_proj.weight"]
+        mlp_up = self.tensors["mlp.up_proj.weight"]
+
+        input_up = F.linear(input_seq, mlp_up)
+        input_gate = F.linear(input_seq, mlp_gate)
+
+        return F.linear(input_up * F.silu(input_gate), mlp_down)
 
     def forward(self, input_seq):
         pass
@@ -136,4 +146,6 @@ if __name__ == "__main__":
     causal_mask = torch.full((input_length, input_length), float("-inf")).triu(
         diagonal=1
     )
-    layer.attention(sample_input, causal_mask)
+    # layer.attention(sample_input, causal_mask)
+    out = layer.mlp(sample_input)
+    print("out shape:", out.shape)
