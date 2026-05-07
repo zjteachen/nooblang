@@ -27,8 +27,6 @@ class Qwen2_5(Model):
         self.full_norm_weights = nonlayer_tensors["model.norm.weight"]
 
         self.layers = []
-        # temp: set num layers to low n
-        num_layers = 4
         for i in range(num_layers):
             tensors = loader.load_layer(i)
             self.layers.append(
@@ -52,6 +50,7 @@ class Qwen2_5(Model):
 
         last_logit = logits[-1]
         distr = F.softmax(last_logit / temperature, dim=0)
+        return distr
 
 
 if __name__ == "__main__":

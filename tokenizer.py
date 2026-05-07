@@ -8,7 +8,9 @@ import os
 import json
 import regex
 import heapq
-from typing import List, Sequence
+
+from typing import List, Sequence, Optional
+from itertools import count
 from utils import bytes_to_unicode_map
 from dataclasses import dataclass
 
@@ -64,50 +66,69 @@ class Pretokenizer:
 
 
 def BPE_merge(text: str, merges: dict, vocab: dict) -> List[int]:
-    @dataclass(order=True)
+    # TODO: edge case for text is length 1
+
+    @dataclass
     class Node:
-        i: int
-        next: int
-        alive: bool
-        content: str
-        sort_key: int
+        id: int
+        next: "None | Node"
+        prev: "None | Node"
+        left: str
+        right: str
+        deleted: bool = False
 
-    nodes = []
+    head = Node(0, None, None, "#placeholder$", text[0])
+    last = head
+
     pq = []
-    for i in range(len(text)):
-        nodes.append(Node(i, i + 1, True, text[i], i))
 
-    merge_to_id = dict((merge.split(" ", 1), i) for i, merge in enumerate(merges))
+    merge_to_id = dict(
+        (tuple(merge.split(" ", 1)), i) for i, merge in enumerate(merges)
+    )
+
+    counter = count()
     for i in range(1, len(text)):
         pair = (text[i - 1], text[i])
-        pq_value = (merge_to_id.get(pair) or len(merge_to_id), nodes[i - 1], nodes[i])
-        heapq.heappush(pq, pq_value)
+        newnode = Node(i, None, last, *pair)
+
+        last.next = newnode
+        last = newnode
+
+        priority = merge_to_id.get(pair)
+        if priority is not None:
+            heapq.heappush(pq, (priority, next(counter), last))
+
+    def update_heapq(node):
+        if not node.deleted:
+            merge_id = merge_to_id.get((node.left, node.right))
+            if merge_id is not None:
+                heapq.heappush(pq, (merge_id, next(counter), node))
 
     while pq:
-        merge, node1, node2 = heapq.heappop(pq)
-        # assume valid:
-        if (
-            node1.alive
-            and node2.alive
-            and node1.next == node2.i
-            and merge == merge_to_id.get((node1.content, node2.content))
-        ):
-            node1.content += node2.content
-            node2.alive = False
-            node1.next = node2.next
-            if node1.next < len(text) and nodes[node1.next].alive:
-                new_merge = merge_to_id.get(
-                    (node1.content, nodes[node1.next].content) or len(merge_to_id)
-                )
+        merge, _, node = heapq.heappop(pq)
+        # staleness check: if the merge id does not match the node's stored merge
+        if not node.deleted and merges[merge] == node.left + " " + node.right:
+            # unchecked assertion: we will never try to remove the only node
+            assert node is not head
+            node.prev.next = node.next
+            node.prev.right = node.left + node.right
+            if node.prev is not head:
+                update_heapq(node.prev)
 
-                heapq.heappush(pq, (new_merge, node1, nodes[node1.next]))
-    ret = []
-    for node in nodes:
-        if node.alive:
-            # Need to handle unk properly here
-            token = vocab.get(node.content) or "UNK"
-            ret.append(token)
-    return ret
+            if node.next is not None:
+                node.next.prev = node.prev
+                node.next.left = node.left + node.right
+                update_heapq(node.next)
+
+            node.deleted = True
+
+    seq = []
+    while head:
+        seq.append(vocab[head.right])  # qwen has no UNK
+        head = head.next
+
+    print("joined:", seq)
+    return seq
 
 
 def tokenize(prompt, model_path):
@@ -124,7 +145,15 @@ def tokenize(prompt, model_path):
         tokenizer_config = json.loads(f.read())
 
     pretokenizer = Pretokenizer(tokenizer_config.get("pre_tokenizer"))
-    return pretokenizer.pretokenize([prompt])
+    ret = []
+    tokenizer_config = open(os.path.join(model_path, "tokenizer.json"), "r").read()
+    tokenizer_config = json.loads(tokenizer_config)
+    tokenizer_config = tokenizer_config.get("model")
+
+    for block in pretokenizer.pretokenize([prompt]):
+        print(block)
+        ret += BPE_merge(block, tokenizer_config["merges"], tokenizer_config["vocab"])
+    return ret
 
 
 if __name__ == "__main__":
@@ -152,4 +181,4 @@ if __name__ == "__main__":
         print(f"{key}:", s)
         print()
 
-    breakpoint()
+    print(tokenize(sample, model_path))
