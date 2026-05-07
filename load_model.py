@@ -23,9 +23,6 @@ class ModelLoader:
             if not mt:
                 layer_keys[key] = self.state_dict.get_tensor(key)
 
-        for k in layer_keys:
-            print(k, layer_keys[k].shape)
-
         return layer_keys
 
     def load_layer(self, layer_index: int):
@@ -36,10 +33,6 @@ class ModelLoader:
             mt = re.match(r"model\.layers\.(\d+)", key)
             if mt and int(search := mt.group(1)) == layer_index:
                 layer_keys[key.split(search)[1][1:]] = self.state_dict.get_tensor(key)
-
-        for k in layer_keys:
-            # print(k, layer_keys[k].shape)
-            pass
 
         return layer_keys
 

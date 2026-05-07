@@ -28,13 +28,13 @@ class Qwen2Layer:
 
     def attention(self, input_seq, causal_mask):
         #
-        B_K = self.tensors.get("self_attn.k_proj.bias")
-        W_K = self.tensors.get("self_attn.k_proj.weight")
-        B_Q = self.tensors.get("self_attn.q_proj.bias")
-        W_Q = self.tensors.get("self_attn.q_proj.weight")
-        B_V = self.tensors.get("self_attn.v_proj.bias")
-        W_V = self.tensors.get("self_attn.v_proj.weight")
-        W_O = self.tensors.get("self_attn.o_proj.weight")
+        B_K = self.tensors["self_attn.k_proj.bias"]
+        W_K = self.tensors["self_attn.k_proj.weight"]
+        B_Q = self.tensors["self_attn.q_proj.bias"]
+        W_Q = self.tensors["self_attn.q_proj.weight"]
+        B_V = self.tensors["self_attn.v_proj.bias"]
+        W_V = self.tensors["self_attn.v_proj.weight"]
+        W_O = self.tensors["self_attn.o_proj.weight"]
 
         Q = (
             F.linear(input_seq, W_Q, B_Q)
