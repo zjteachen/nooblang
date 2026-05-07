@@ -14,13 +14,15 @@ class Qwen2Layer:
         n_heads: int,
         n_kvheads: int,
         tensors: Dict[str, torch.Tensor],
-        rope_base: int,
+        rope_base: float,
+        rms_norm_eps: float,
     ) -> None:
         self.tensors: Dict[str, torch.Tensor] = tensors
         self.n_heads = n_heads
         self.n_kvheads = n_kvheads
         self.rope_base = rope_base
         self.k_dim = 128
+        self.rms_norm_eps = rms_norm_eps
 
         # TODO: check structure of layer against model config.
 
@@ -33,7 +35,6 @@ class Qwen2Layer:
         B_V = self.tensors.get("self_attn.v_proj.bias")
         W_V = self.tensors.get("self_attn.v_proj.weight")
         W_O = self.tensors.get("self_attn.o_proj.weight")
-        print("Input shape:", input_seq.shape)
 
         Q = (
             F.linear(input_seq, W_Q, B_Q)
@@ -61,9 +62,6 @@ class Qwen2Layer:
         V_rep = torch.repeat_interleave(V, reps, dim=0)
 
         # apply RoPE
-        print("Q shape:", Q.shape)
-        print("K shape:", K_rep.shape)
-
         Q = self.apply_rope(Q)
         K_rep = self.apply_rope(K_rep)
 
@@ -73,7 +71,6 @@ class Qwen2Layer:
 
         scores = (scores @ V_rep).transpose(0, 1).reshape(-1, self.k_dim * self.n_heads)
         scores = F.linear(scores, W_O)
-        print("scores:", scores.shape)
         return scores
 
     def apply_rope(self, tensor):
@@ -116,8 +113,28 @@ class Qwen2Layer:
 
         return F.linear(input_up * F.silu(input_gate), mlp_down)
 
+    def normalize(self, input_seq, gain):
+        return torch.rms_norm(
+            input_seq, (input_seq.shape[-1],), gain, self.rms_norm_eps
+        )
+
     def forward(self, input_seq):
-        pass
+        input_length = input_seq.shape[0]
+        input_norm = self.tensors["input_layernorm.weight"]
+        post_attention_norm = self.tensors["post_attention_layernorm.weight"]
+        h = self.normalize(input_seq, input_norm)
+        causal_mask = torch.full(
+            (input_length, input_length), float("-inf"), dtype=torch.bfloat16
+        ).triu(diagonal=1)
+        h = self.attention(h, causal_mask)
+        out = input_seq + h
+
+        h = self.normalize(out, post_attention_norm)
+        h = self.mlp(h)
+        out += h
+        return out
+
+    # layer.attention(sample_input, causal_mask)
 
 
 if __name__ == "__main__":
@@ -139,13 +156,18 @@ if __name__ == "__main__":
     n_heads = config["num_attention_heads"]
     n_kvheads = config["num_key_value_heads"]
     rope_base = config["rope_theta"]
+    rms_norm_eps = config["rms_norm_eps"]
 
     loader = ModelLoader(model_path)
 
-    layer = Qwen2Layer(n_heads, n_kvheads, loader.load_layer(1), rope_base)
+    layer = Qwen2Layer(
+        n_heads, n_kvheads, loader.load_layer(1), rope_base, rms_norm_eps
+    )
     causal_mask = torch.full((input_length, input_length), float("-inf")).triu(
         diagonal=1
     )
+    print("Input shape:", sample_input.shape)
     # layer.attention(sample_input, causal_mask)
-    out = layer.mlp(sample_input)
-    print("out shape:", out.shape)
+    # out = layer.mlp(sample_input)
+    layer_out = layer.forward(sample_input)
+    print("Output shape:", layer_out.shape)
