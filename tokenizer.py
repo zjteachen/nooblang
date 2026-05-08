@@ -8,6 +8,7 @@ import os
 import json
 import regex
 import heapq
+import jinja2
 
 from typing import List, Sequence, Optional
 from itertools import count
@@ -66,7 +67,8 @@ class Pretokenizer:
 
 
 def BPE_merge(text: str, merges: dict, vocab: dict) -> List[int]:
-    # TODO: edge case for text is length 1
+    if text == "":
+        return []
 
     @dataclass
     class Node:
@@ -127,7 +129,6 @@ def BPE_merge(text: str, merges: dict, vocab: dict) -> List[int]:
         seq.append(vocab[head.right])  # qwen has no UNK
         head = head.next
 
-    print("joined:", seq)
     return seq
 
 
@@ -141,18 +142,38 @@ def tokenize(prompt, model_path):
     - BPE merge on each individual chunk.
     - Recombine, inserting the lookups from the previously removed special tokens.
     """
+
     with open(os.path.join(model_path, "tokenizer.json"), "r") as f:
         tokenizer_config = json.loads(f.read())
 
     pretokenizer = Pretokenizer(tokenizer_config.get("pre_tokenizer"))
-    ret = []
-    tokenizer_config = open(os.path.join(model_path, "tokenizer.json"), "r").read()
-    tokenizer_config = json.loads(tokenizer_config)
-    tokenizer_config = tokenizer_config.get("model")
+    # apply chat template
+    with open("template.txt", "r") as f:
+        template = jinja2.Template(f.read())
 
-    for block in pretokenizer.pretokenize([prompt]):
-        print(block)
-        ret += BPE_merge(block, tokenizer_config["merges"], tokenizer_config["vocab"])
+    text = template.render(
+        messages=[{"role": "user", "content": prompt}],
+        add_generation_prompt=True,
+    )
+
+    # extract special tokens
+    special_tokens = dict(
+        (a["content"], a["id"]) for a in tokenizer_config["added_tokens"]
+    )
+    pattern = f"({'|'.join(map(regex.escape, special_tokens.keys()))})"
+    pieces = regex.split(pattern, text)
+
+    ret = []
+    for piece in pieces:
+        if special_tokens.get(piece) is not None:
+            ret.append(special_tokens[piece])
+        else:
+            for block in pretokenizer.pretokenize([piece]):
+                ret += BPE_merge(
+                    block,
+                    tokenizer_config["model"]["merges"],
+                    tokenizer_config["model"]["vocab"],
+                )
     return ret
 
 
@@ -178,7 +199,5 @@ if __name__ == "__main__":
         s = str(tokenizer_config.get(key))
         if len(s) > 1000:
             s = s[:500] + "(truncated)"
-        print(f"{key}:", s)
-        print()
 
     print(tokenize(sample, model_path))
