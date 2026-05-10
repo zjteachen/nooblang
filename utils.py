@@ -1,4 +1,4 @@
-def bytes_to_unicode():
+def bytes_to_unicode(reverse=False):
     """
     Reference implementation for mapping bytes to unicode values
     from gpt2.
@@ -21,7 +21,11 @@ def bytes_to_unicode():
             cs.append(2**8 + n)
             n += 1
     cs = [chr(n) for n in cs]
-    return dict(zip(bs, cs))
+    if reverse:
+        return dict(zip(cs, bs))
+    else:
+        return dict(zip(bs, cs))
 
 
 bytes_to_unicode_map = bytes_to_unicode()
+reverse_bytes_to_unicode_map = bytes_to_unicode(reverse=True)

@@ -35,7 +35,6 @@ class Qwen2_5(Model):
 
     def predict(self, tokens, temperature=1.0):
         embeddings = self.embedding_matrix[tokens]
-        print("embeddings:", embeddings.shape)
         for layer in self.layers:
             embeddings = layer.forward(embeddings)
 
@@ -50,7 +49,8 @@ class Qwen2_5(Model):
 
         last_logit = logits[-1]
         distr = F.softmax(last_logit / temperature, dim=0)
-        return distr
+        next_token = torch.multinomial(distr, 1).item()
+        return next_token
 
 
 if __name__ == "__main__":

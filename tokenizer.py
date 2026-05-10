@@ -10,9 +10,9 @@ import regex
 import heapq
 import jinja2
 
-from typing import List, Sequence, Optional
+from typing import List, Sequence, Optional, Tuple
 from itertools import count
-from utils import bytes_to_unicode_map
+from utils import bytes_to_unicode_map, reverse_bytes_to_unicode_map
 from dataclasses import dataclass
 
 
@@ -132,49 +132,91 @@ def BPE_merge(text: str, merges: dict, vocab: dict) -> List[int]:
     return seq
 
 
-def tokenize(prompt, model_path):
+class Tokenizer:
     """
-    This function needs to eventually fully tokenize the input.
-    Pseudocode/necessary steps:
-    - Apply the relevant chat template to surround the message.
-    - Store and split on special tokens (tokens that should not be part of the merging process).
-    - Pretokenize the split sections (which should return the chunks of byte-level encoded strings)
-    - BPE merge on each individual chunk.
-    - Recombine, inserting the lookups from the previously removed special tokens.
+    Full translation flow from plaintext -> tokens:
+    - Split around special tokens that are mapped one-to-one with token ids.
+    - Get unicode bytes of chunks and remap to readable representations.
+    - Merge bytes with BPE to get the tokens.
+    - Map the token bytes to their IDs.
     """
 
-    with open(os.path.join(model_path, "tokenizer.json"), "r") as f:
-        tokenizer_config = json.loads(f.read())
+    def __init__(self, model_path):
+        with open(os.path.join(model_path, "tokenizer.json"), "r") as f:
+            self.tokenizer_config = json.loads(f.read())
+        self.pretokenizer = Pretokenizer(self.tokenizer_config.get("pre_tokenizer"))
 
-    pretokenizer = Pretokenizer(tokenizer_config.get("pre_tokenizer"))
-    # apply chat template
-    with open("template.txt", "r") as f:
-        template = jinja2.Template(f.read())
+        with open("template.txt", "r") as f:
+            self.template = jinja2.Template(f.read())
 
-    text = template.render(
-        messages=[{"role": "user", "content": prompt}],
-        add_generation_prompt=True,
-    )
+    def tokenize(self, prompt):
+        """
+        This function needs to eventually fully tokenize the input.
+        Pseudocode/necessary steps:
+        - Apply the relevant chat template to surround the message.
+        - Store and split on special tokens (tokens that should not be part of the merging process).
+        - Pretokenize the split sections (which should return the chunks of byte-level encoded strings)
+        - BPE merge on each individual chunk.
+        - Recombine, inserting the lookups from the previously removed special tokens.
+        """
 
-    # extract special tokens
-    special_tokens = dict(
-        (a["content"], a["id"]) for a in tokenizer_config["added_tokens"]
-    )
-    pattern = f"({'|'.join(map(regex.escape, special_tokens.keys()))})"
-    pieces = regex.split(pattern, text)
+        # apply chat template
 
-    ret = []
-    for piece in pieces:
-        if special_tokens.get(piece) is not None:
-            ret.append(special_tokens[piece])
-        else:
-            for block in pretokenizer.pretokenize([piece]):
-                ret += BPE_merge(
-                    block,
-                    tokenizer_config["model"]["merges"],
-                    tokenizer_config["model"]["vocab"],
-                )
-    return ret
+        text = self.template.render(
+            messages=[{"role": "user", "content": prompt}],
+            add_generation_prompt=True,
+        )
+
+        # extract special tokens
+        special_tokens = dict(
+            (a["content"], a["id"]) for a in self.tokenizer_config["added_tokens"]
+        )
+        pattern = f"({'|'.join(map(regex.escape, special_tokens.keys()))})"
+        pieces = regex.split(pattern, text)
+
+        ret = []
+        for piece in pieces:
+            if special_tokens.get(piece) is not None:
+                ret.append(special_tokens[piece])
+            else:
+                for block in self.pretokenizer.pretokenize([piece]):
+                    ret += BPE_merge(
+                        block,
+                        self.tokenizer_config["model"]["merges"],
+                        self.tokenizer_config["model"]["vocab"],
+                    )
+        return ret
+
+    def detokenize(self, tokens) -> Tuple[bool, str]:
+        # construct reverse mao
+        reverse_token_map = {}
+        vocab = self.tokenizer_config["model"]["vocab"]
+        reverse_special_map = dict(
+            (a["id"], a["content"]) for a in self.tokenizer_config["added_tokens"]
+        )
+
+        for k in vocab:
+            reverse_token_map[vocab[k]] = k
+
+        result = []
+        buffer = bytearray()
+        for token in tokens:
+            if (chunk := reverse_special_map.get(token)) is not None:
+                if buffer:
+                    result.append(buffer.decode("utf-8", errors="replace"))
+                    buffer.clear()
+                result.append(chunk)
+            else:
+                token_bytes = reverse_token_map[token]
+                for byte in token_bytes:
+                    buffer.append(reverse_bytes_to_unicode_map[byte])
+
+        if buffer:
+            result.append(buffer.decode("utf-8", errors="replace"))
+
+        finished = result[-1] in reverse_special_map.values()
+
+        return finished, "".join(result)
 
 
 if __name__ == "__main__":
@@ -186,18 +228,11 @@ if __name__ == "__main__":
     model_path = args.model_path
 
     sample = """Hi, how are you?"""
+    tokenizer = Tokenizer(model_path)
 
-    # result = tokenize(sample, model_path)
-    # print(result)
+    result = tokenizer.tokenize(sample)
+    print(result)
 
     # tokenized = tokenize(sample)
-    tokenizer_config = open(os.path.join(model_path, "tokenizer.json"), "r").read()
-    tokenizer_config = json.loads(tokenizer_config)
-    tokenizer_config = tokenizer_config.get("model")
 
-    for key in tokenizer_config.keys():
-        s = str(tokenizer_config.get(key))
-        if len(s) > 1000:
-            s = s[:500] + "(truncated)"
-
-    print(tokenize(sample, model_path))
+    print(tokenizer.detokenize(result))
