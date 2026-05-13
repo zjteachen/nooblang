@@ -34,11 +34,18 @@ if __name__ == "__main__":
     model = Qwen2_5(model_path)
 
     new_seq = [*seq]
-    result = ""
-    for i in range(5):
-        new_seq.append(model.predict(new_seq))
-        done, result = tokenizer.detokenize(new_seq[len(seq) :])
-        if done:
-            break
+    buffer = []
+    max_tokens = 400
+    for i in range(max_tokens):
+        next = model.predict(new_seq)
+        new_seq.append(next)
+        buffer.append(next)
+        try:
+            done, result = tokenizer.detokenize(buffer)
+            buffer = []
+            if done:
+                break
+            print(result, end="", flush=True)
 
-    print(result)
+        except UnicodeDecodeError:
+            pass

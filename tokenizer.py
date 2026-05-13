@@ -144,10 +144,22 @@ class Tokenizer:
     def __init__(self, model_path):
         with open(os.path.join(model_path, "tokenizer.json"), "r") as f:
             self.tokenizer_config = json.loads(f.read())
+
+        with open(os.path.join(model_path, "tokenizer_config.json"), "r") as f:
+            self.extra_config = json.loads(f.read())
+
+        self.eos_token = self.extra_config["eos_token"]
         self.pretokenizer = Pretokenizer(self.tokenizer_config.get("pre_tokenizer"))
 
         with open("template.txt", "r") as f:
             self.template = jinja2.Template(f.read())
+
+        self.reverse_special_map = dict(
+            (a["id"], a["content"]) for a in self.tokenizer_config["added_tokens"]
+        )
+        vocab = self.tokenizer_config["model"]["vocab"]
+
+        self.reverse_token_map = dict((vocab[k], k) for k in vocab)
 
     def tokenize(self, prompt):
         """
@@ -189,32 +201,24 @@ class Tokenizer:
 
     def detokenize(self, tokens) -> Tuple[bool, str]:
         # construct reverse mao
-        reverse_token_map = {}
-        vocab = self.tokenizer_config["model"]["vocab"]
-        reverse_special_map = dict(
-            (a["id"], a["content"]) for a in self.tokenizer_config["added_tokens"]
-        )
-
-        for k in vocab:
-            reverse_token_map[vocab[k]] = k
 
         result = []
         buffer = bytearray()
         for token in tokens:
-            if (chunk := reverse_special_map.get(token)) is not None:
+            if (chunk := self.reverse_special_map.get(token)) is not None:
                 if buffer:
                     result.append(buffer.decode("utf-8", errors="replace"))
                     buffer.clear()
                 result.append(chunk)
             else:
-                token_bytes = reverse_token_map[token]
+                token_bytes = self.reverse_token_map[token]
                 for byte in token_bytes:
                     buffer.append(reverse_bytes_to_unicode_map[byte])
 
         if buffer:
-            result.append(buffer.decode("utf-8", errors="replace"))
+            result.append(buffer.decode("utf-8"))
 
-        finished = result[-1] in reverse_special_map.values()
+        finished = result[-1] == self.eos_token
 
         return finished, "".join(result)
 
