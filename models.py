@@ -33,7 +33,7 @@ class Qwen2_5(Model):
                 Qwen2Layer(n_heads, n_kvheads, tensors, rope_base, self.rms_norm_eps)
             )
 
-    def predict(self, tokens, temperature=1.0):
+    def predict(self, tokens):
         embeddings = self.embedding_matrix[tokens]
         for layer in self.layers:
             embeddings = layer.forward(embeddings)
@@ -45,12 +45,9 @@ class Qwen2_5(Model):
             self.rms_norm_eps,
         )
 
-        logits = F.linear(embeddings, self.embedding_matrix)
+        logits = F.linear(embeddings, self.embedding_matrix)[-1]
 
-        last_logit = logits[-1]
-        distr = F.softmax(last_logit / temperature, dim=0)
-        next_token = torch.multinomial(distr, 1).item()
-        return next_token
+        return logits
 
 
 if __name__ == "__main__":

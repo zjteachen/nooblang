@@ -1,25 +1,25 @@
 import argparse
 import os
 import json
+import torch
 
-from torch import mode
+import torch.nn.functional as F
 
 from tokenizer import Tokenizer
 from models import Qwen2_5
 
 
-def get_token_mappings(model_path: str) -> dict:
-    id_to_str = {}
-    with open(os.path.join(model_path, "tokenizer.json"), "r") as f:
-        tokenizer_config = json.loads(f.read())
 
-    for token in tokenizer_config["added_tokens"]:
-        id_to_str[token["id"]] = token["content"]
 
-    reversed_dict = {
-        value: key for key, value in tokenizer_config["model"]["vocab"].items()
-    }
-    return id_to_str | reversed_dict
+def sample_tokens(logits, temperature=0.7, top_p=0.8):
+    """implementation of top-p sampling algorithm."""
+    new_distr = F.softmax(logits / temperature)
+    sorted_logits, sorted_indices = torch.sort(new_distr, dim=-1, descending=True)
+    cumulative_distr = torch.cumsum(sorted_logits, dim=-1) - sorted_logits > top_p
+
+    remove_indices = cumulative_distr.scatter(dim=-1, index=sorted_indices, src=cumulative_distr)
+    probs = F.softmax(logits.masked_fill(remove_indices, float('-inf')) / temperature)
+    return torch.multinomial(probs, num_samples=1).item()
 
 
 if __name__ == "__main__":
@@ -35,9 +35,12 @@ if __name__ == "__main__":
 
     new_seq = [*seq]
     buffer = []
-    max_tokens = 400
+    max_tokens=400
     for i in range(max_tokens):
-        next = model.predict(new_seq)
+        distr = model.predict(new_seq)
+        temperature = 0.7
+        top_p = 0.8
+        next = sample_tokens(distr, temperature, top_p)
         new_seq.append(next)
         buffer.append(next)
         try:
@@ -46,6 +49,4 @@ if __name__ == "__main__":
             if done:
                 break
             print(result, end="", flush=True)
-
-        except UnicodeDecodeError:
-            pass
+        except: pass
