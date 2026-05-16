@@ -9,16 +9,18 @@ from tokenizer import Tokenizer
 from models import Qwen2_5
 
 
-
-
 def sample_tokens(logits, temperature=0.7, top_p=0.8):
     """implementation of top-p sampling algorithm."""
-    new_distr = F.softmax(logits / temperature)
+    new_distr = F.softmax(logits / temperature, dim=-1)
     sorted_logits, sorted_indices = torch.sort(new_distr, dim=-1, descending=True)
     cumulative_distr = torch.cumsum(sorted_logits, dim=-1) - sorted_logits > top_p
 
-    remove_indices = cumulative_distr.scatter(dim=-1, index=sorted_indices, src=cumulative_distr)
-    probs = F.softmax(logits.masked_fill(remove_indices, float('-inf')) / temperature)
+    remove_indices = cumulative_distr.scatter(
+        dim=-1, index=sorted_indices, src=cumulative_distr
+    )
+    probs = F.softmax(
+        logits.masked_fill(remove_indices, float("-inf")) / temperature, dim=-1
+    )
     return torch.multinomial(probs, num_samples=1).item()
 
 
@@ -35,7 +37,7 @@ if __name__ == "__main__":
 
     new_seq = [*seq]
     buffer = []
-    max_tokens=400
+    max_tokens = 400
     for i in range(max_tokens):
         distr = model.predict(new_seq)
         temperature = 0.7
@@ -49,4 +51,5 @@ if __name__ == "__main__":
             if done:
                 break
             print(result, end="", flush=True)
-        except: pass
+        except UnicodeDecodeError:
+            pass
