@@ -12,7 +12,7 @@ import jinja2
 
 from typing import List, Sequence, Optional, Tuple
 from itertools import count
-from utils import bytes_to_unicode_map, reverse_bytes_to_unicode_map
+from .utils import bytes_to_unicode_map, reverse_bytes_to_unicode_map
 from dataclasses import dataclass
 
 

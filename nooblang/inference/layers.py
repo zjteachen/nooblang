@@ -2,7 +2,7 @@ import argparse
 import torch
 import math
 
-from load_model import ModelLoader, load_model_config
+from .load_model import ModelLoader, load_model_config
 from torch.nn import functional as F
 from typing import Dict
 from jaxtyping import Float

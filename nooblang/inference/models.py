@@ -1,8 +1,8 @@
 import argparse
 import torch
 
-from load_model import ModelLoader, load_model_config
-from layers import Qwen2Layer
+from .load_model import ModelLoader, load_model_config
+from .layers import Qwen2Layer
 from torch.nn import functional as F
 from abc import ABC
 

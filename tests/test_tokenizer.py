@@ -1,6 +1,6 @@
 import argparse
 from transformers import AutoTokenizer
-from tokenizer import tokenize
+from nooblang.inference.tokenizer import Tokenizer
 
 
 CASES = [
@@ -32,6 +32,7 @@ def main():
     args = parser.parse_args()
 
     ref = AutoTokenizer.from_pretrained(args.model_path)
+    tokenizer = Tokenizer(args.model_path)
 
     failures = 0
     for i, text in enumerate(CASES):
@@ -41,7 +42,7 @@ def main():
             tokenize=True,
         ).get("input_ids")
         try:
-            actual = tokenize(text, args.model_path)
+            actual = tokenizer.tokenize(text)
         except Exception as e:
             print(f"[{i}] CRASH on {text!r}: {type(e).__name__}: {e}")
             failures += 1

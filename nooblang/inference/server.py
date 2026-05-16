@@ -5,8 +5,8 @@ import torch
 
 import torch.nn.functional as F
 
-from tokenizer import Tokenizer
-from models import Qwen2_5
+from .tokenizer import Tokenizer
+from .models import Qwen2_5
 
 
 def sample_tokens(logits, temperature=0.7, top_p=0.8):
