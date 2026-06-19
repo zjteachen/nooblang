@@ -37,18 +37,18 @@ class Qwen2Layer:
         W_O = self.tensors["self_attn.o_proj.weight"]
 
         Q = (
-            F.linear(input_seq, W_Q, B_Q)
+            (input_seq @ W_Q.T + B_Q)
             .view(-1, self.n_heads, self.k_dim)
             .transpose(0, 1)
         )
         K = (
-            F.linear(input_seq, W_K, B_K)
+            (input_seq @ W_K.T + B_K)
             .view(-1, self.n_kvheads, self.k_dim)
             .transpose(0, 1)
         )
 
         V = (
-            F.linear(input_seq, W_V, B_V)
+            (input_seq @ W_V.T + B_V)
             .view(-1, self.n_kvheads, self.k_dim)
             .transpose(0, 1)
         )
@@ -70,7 +70,7 @@ class Qwen2Layer:
         scores = F.softmax(scores, dim=-1, dtype=torch.bfloat16)
 
         scores = (scores @ V_rep).transpose(0, 1).reshape(-1, self.k_dim * self.n_heads)
-        scores = F.linear(scores, W_O)
+        scores = scores @ W_O.T
         return scores
 
     def apply_rope(self, tensor):
@@ -108,10 +108,10 @@ class Qwen2Layer:
         mlp_gate = self.tensors["mlp.gate_proj.weight"]
         mlp_up = self.tensors["mlp.up_proj.weight"]
 
-        input_up = F.linear(input_seq, mlp_up)
-        input_gate = F.linear(input_seq, mlp_gate)
+        input_up = input_seq @ mlp_up.T
+        input_gate = input_seq @ mlp_gate.T
 
-        return F.linear(input_up * F.silu(input_gate), mlp_down)
+        return (input_up * F.silu(input_gate)) @ mlp_down.T
 
     def normalize(self, input_seq, gain):
         return torch.rms_norm(

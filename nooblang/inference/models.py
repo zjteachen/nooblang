@@ -3,7 +3,6 @@ import torch
 
 from .load_model import ModelLoader, load_model_config
 from .layers import Qwen2Layer
-from torch.nn import functional as F
 from abc import ABC
 
 
@@ -45,7 +44,7 @@ class Qwen2_5(Model):
             self.rms_norm_eps,
         )
 
-        logits = F.linear(embeddings, self.embedding_matrix)[-1]
+        logits = (embeddings @ self.embedding_matrix.T)[-1]
 
         return logits
 
