@@ -2,10 +2,17 @@ import argparse
 import torch
 import math
 
+from dataclasses import dataclass
 from .load_model import ModelLoader, load_model_config
 from torch.nn import functional as F
-from typing import Dict
+from typing import Dict, Optional
 from jaxtyping import Float
+
+
+@dataclass
+class KVCache:
+    K: Optional[torch.Tensor] = None
+    V: Optional[torch.Tensor] = None
 
 
 class Qwen2Layer:
@@ -23,11 +30,12 @@ class Qwen2Layer:
         self.rope_base = rope_base
         self.k_dim = 128
         self.rms_norm_eps = rms_norm_eps
+        self.kvcache_len = 0
+        self.kvcache = KVCache()
 
         # TODO: check structure of layer against model config.
 
-    def attention(self, input_seq, causal_mask):
-        #
+    def attention(self, input_seq, causal_mask, new_kvcache=False):
         B_K = self.tensors["self_attn.k_proj.bias"]
         W_K = self.tensors["self_attn.k_proj.weight"]
         B_Q = self.tensors["self_attn.q_proj.bias"]
@@ -41,36 +49,71 @@ class Qwen2Layer:
             .view(-1, self.n_heads, self.k_dim)
             .transpose(0, 1)
         )
-        K = (
-            (input_seq @ W_K.T + B_K)
-            .view(-1, self.n_kvheads, self.k_dim)
-            .transpose(0, 1)
-        )
 
-        V = (
-            (input_seq @ W_V.T + B_V)
-            .view(-1, self.n_kvheads, self.k_dim)
-            .transpose(0, 1)
-        )
+        if new_kvcache:
+            self.kvcache_len = len(input_seq)
+            K = (
+                (input_seq @ W_K.T + B_K)
+                .view(-1, self.n_kvheads, self.k_dim)
+                .transpose(0, 1)
+            )
+
+            V = (
+                (input_seq @ W_V.T + B_V)
+                .view(-1, self.n_kvheads, self.k_dim)
+                .transpose(0, 1)
+            )
+
+        else:
+            K = self.kvcache.K
+            V = self.kvcache.V
+            
+            new_K = (
+                (input_seq @ W_K.T + B_K)
+                .view(-1, self.n_kvheads, self.k_dim)
+                .transpose(0, 1)
+            )
+
+            new_V = (
+                (input_seq @ W_V.T + B_V)
+                .view(-1, self.n_kvheads, self.k_dim)
+                .transpose(0, 1)
+            )
 
         # duplicate kv heads to match Q.
         assert (
             self.n_heads % self.n_kvheads == 0
         ), "# of heads not divisible by # of kvheads"
         reps = self.n_heads // self.n_kvheads
+
+        # apply RoPE
+        if new_kvcache:
+            Q = self.apply_rope(Q)
+            K = self.apply_rope(K)
+        else:
+            Q = self.apply_rope_single(Q, self.kvcache_len)
+            new_K = self.apply_rope_single(new_K, self.kvcache_len)
+            self.kvcache_len += 1
+
+            K = torch.cat([K, new_K], dim=1)
+            V = torch.cat([V, new_V], dim=1)
+
         K_rep = torch.repeat_interleave(K, reps, dim=0)
         V_rep = torch.repeat_interleave(V, reps, dim=0)
 
-        # apply RoPE
-        Q = self.apply_rope(Q)
-        K_rep = self.apply_rope(K_rep)
-
         scores = (Q @ K_rep.transpose(-1, -2)) / math.sqrt(self.k_dim)
-        scores += causal_mask
+
+        if new_kvcache:
+            scores += causal_mask
         scores = F.softmax(scores, dim=-1, dtype=torch.bfloat16)
 
         scores = (scores @ V_rep).transpose(0, 1).reshape(-1, self.k_dim * self.n_heads)
         scores = scores @ W_O.T
+
+        # update kvcache with the full (old + new) K/V used above
+        self.kvcache.K = K
+        self.kvcache.V = V
+
         return scores
 
     def apply_rope(self, tensor):
@@ -87,6 +130,33 @@ class Qwen2Layer:
         theta = torch.outer(
             token_index, (self.rope_base ** -((2 * theta_index) / d_k)).repeat(2)
         )
+
+        x1, x2 = (
+            tensor[..., : d_k // 2],
+            tensor[..., d_k // 2 :],
+        )
+
+        rotated_half = torch.cat([-x2, x1], dim=-1)
+
+        cos_t = torch.cos(theta).to(torch.bfloat16)
+        sin_t = torch.sin(theta).to(torch.bfloat16)
+
+        return cos_t * tensor + sin_t * rotated_half
+
+    def apply_rope_single(self, tensor, position):
+        """
+        Apply RoPE to a single Q/K vector at absolute sequence position
+        `position`, for tensors of assumed dimensions [**, head_dimension]
+        (no sequence_length axis). Used in decode, where each step only
+        has one new Q/K to rotate and its position is the kv cache length
+        rather than 0.
+        """
+        d_k = tensor.shape[-1]
+
+        assert d_k == self.k_dim
+
+        theta_index = torch.arange(d_k // 2, device=tensor.device)
+        theta = position * (self.rope_base ** -((2 * theta_index) / d_k)).repeat(2)
 
         x1, x2 = (
             tensor[..., : d_k // 2],
@@ -118,15 +188,22 @@ class Qwen2Layer:
             input_seq, (input_seq.shape[-1],), gain, self.rms_norm_eps
         )
 
-    def forward(self, input_seq):
+    def forward(self, input_seq, new_kvcache=False):
         input_length = input_seq.shape[0]
+        if not new_kvcache:
+            assert input_length == 1, "Trying to use kvcache for n>1 tokens"
+
         input_norm = self.tensors["input_layernorm.weight"]
         post_attention_norm = self.tensors["post_attention_layernorm.weight"]
         h = self.normalize(input_seq, input_norm)
-        causal_mask = torch.full(
-            (input_length, input_length), float("-inf"), dtype=torch.bfloat16
-        ).triu(diagonal=1)
-        h = self.attention(h, causal_mask)
+        if new_kvcache:
+            causal_mask = torch.full(
+                (input_length, input_length), float("-inf"), dtype=torch.bfloat16
+            ).triu(diagonal=1)
+        else:
+            causal_mask = None
+
+        h = self.attention(h, causal_mask, new_kvcache=new_kvcache)
         out = input_seq + h
 
         h = self.normalize(out, post_attention_norm)

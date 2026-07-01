@@ -10,6 +10,9 @@ import json
 from safetensors import safe_open
 
 
+"""
+Extracts tensors with per-layer granularity.
+"""
 class ModelLoader:
     def __init__(self, model_path):
         fname = os.path.join(model_path, "model.safetensors")

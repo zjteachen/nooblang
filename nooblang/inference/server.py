@@ -38,10 +38,11 @@ if __name__ == "__main__":
     new_seq = [*seq]
     buffer = []
     max_tokens = 400
+    temperature = 0.7
+    top_p = 0.8
+
+    distr = model.prefill(new_seq)
     for i in range(max_tokens):
-        distr = model.predict(new_seq)
-        temperature = 0.7
-        top_p = 0.8
         next = sample_tokens(distr, temperature, top_p)
         new_seq.append(next)
         buffer.append(next)
@@ -53,3 +54,5 @@ if __name__ == "__main__":
             print(result, end="", flush=True)
         except UnicodeDecodeError:
             pass
+
+        distr = model.decode(next)
