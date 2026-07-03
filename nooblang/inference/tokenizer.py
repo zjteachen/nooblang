@@ -161,7 +161,7 @@ class Tokenizer:
 
         self.reverse_token_map = dict((vocab[k], k) for k in vocab)
 
-    def tokenize(self, prompt):
+    def tokenize(self, prompt=None, messages=None):
         """
         This function needs to eventually fully tokenize the input.
         Pseudocode/necessary steps:
@@ -172,10 +172,13 @@ class Tokenizer:
         - Recombine, inserting the lookups from the previously removed special tokens.
         """
 
+        if messages is None:
+            messages = [{"role": "user", "content": prompt}]
+
         # apply chat template
 
         text = self.template.render(
-            messages=[{"role": "user", "content": prompt}],
+            messages=messages,
             add_generation_prompt=True,
         )
 

@@ -25,6 +25,32 @@ def sample_tokens(logits, temperature=0.7, top_p=0.8):
     return torch.multinomial(probs, num_samples=1).item()
 
 
+def generate(model, tokenizer, messages, max_tokens=400, temperature=0.7, top_p=0.8):
+    """Streams the assistant's reply to stdout and returns the full text."""
+    seq = tokenizer.tokenize(messages=messages)
+
+    buffer = []
+    response = []
+    distr = model.prefill(seq)
+    for _ in range(max_tokens):
+        next = sample_tokens(distr, temperature, top_p)
+        buffer.append(next)
+        try:
+            done, result = tokenizer.detokenize(buffer)
+            buffer = []
+            if done:
+                break
+            response.append(result)
+            print(result, end="", flush=True)
+        except UnicodeDecodeError:
+            pass
+
+        distr = model.decode(next)
+
+    print()
+    return "".join(response)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-m", "--model-path", required=True)
@@ -33,29 +59,25 @@ if __name__ == "__main__":
     model_path = args.model_path
     device = resolve_device(args.device)
 
-    prompt = "Hi, how are you?"
     tokenizer = Tokenizer(model_path)
-    seq = tokenizer.tokenize(prompt)
     model = Qwen2_5(model_path, device=device)
 
-    new_seq = [*seq]
-    buffer = []
-    max_tokens = 400
-    temperature = 0.7
-    top_p = 0.8
+    print("Chat with the model. Type 'exit' or press Ctrl-D to quit.")
 
-    distr = model.prefill(new_seq)
-    for i in range(max_tokens):
-        next = sample_tokens(distr, temperature, top_p)
-        new_seq.append(next)
-        buffer.append(next)
+    messages = []
+    while True:
         try:
-            done, result = tokenizer.detokenize(buffer)
-            buffer = []
-            if done:
-                break
-            print(result, end="", flush=True)
-        except UnicodeDecodeError:
-            pass
+            user_input = input(">>> ")
+        except EOFError:
+            print()
+            break
 
-        distr = model.decode(next)
+        user_input = user_input.strip()
+        if not user_input:
+            continue
+        if user_input in ("exit", "quit"):
+            break
+
+        messages.append({"role": "user", "content": user_input})
+        reply = generate(model, tokenizer, messages)
+        messages.append({"role": "assistant", "content": reply})
