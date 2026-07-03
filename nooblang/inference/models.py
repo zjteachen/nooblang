@@ -3,6 +3,7 @@ import torch
 
 from .load_model import ModelLoader, load_model_config
 from .layers import Qwen2Layer
+from .utils import add_device_arg, resolve_device
 from abc import ABC
 
 
@@ -11,8 +12,9 @@ class Model(ABC):
 
 
 class Qwen2_5(Model):
-    def __init__(self, model_path: str) -> None:
-        loader = ModelLoader(model_path)
+    def __init__(self, model_path: str, device: str = "cpu") -> None:
+        self.device = device
+        loader = ModelLoader(model_path, device=device)
         config = load_model_config(model_path)
 
         n_heads = config["num_attention_heads"]
@@ -77,14 +79,16 @@ class Qwen2_5(Model):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Loads model from hf safetensors.")
     parser.add_argument("-m", "--model-path", help="Path to model folder.")
+    add_device_arg(parser)
 
     args = parser.parse_args()
     model_path = args.model_path
+    device = resolve_device(args.device)
 
-    model = Qwen2_5(model_path)
+    model = Qwen2_5(model_path, device=device)
     config = load_model_config(model_path)
     vocab_size = config["vocab_size"]
 
     sample_length = 200
-    sample_tokens = torch.randint(0, vocab_size - 1, (sample_length,))
+    sample_tokens = torch.randint(0, vocab_size - 1, (sample_length,), device=device)
     model.prefill(sample_tokens)

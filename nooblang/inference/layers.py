@@ -4,6 +4,7 @@ import math
 
 from dataclasses import dataclass
 from .load_model import ModelLoader, load_model_config
+from .utils import add_device_arg, resolve_device
 from torch.nn import functional as F
 from typing import Dict, Optional
 from jaxtyping import Float
@@ -198,7 +199,10 @@ class Qwen2Layer:
         h = self.normalize(input_seq, input_norm)
         if new_kvcache:
             causal_mask = torch.full(
-                (input_length, input_length), float("-inf"), dtype=torch.bfloat16
+                (input_length, input_length),
+                float("-inf"),
+                dtype=torch.bfloat16,
+                device=input_seq.device,
             ).triu(diagonal=1)
         else:
             causal_mask = None
@@ -217,10 +221,12 @@ class Qwen2Layer:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Loads model from hf safetensors.")
     parser.add_argument("-m", "--model-path", help="Path to model folder.")
+    add_device_arg(parser)
 
     args = parser.parse_args()
 
     model_path = args.model_path
+    device = resolve_device(args.device)
     config = load_model_config(model_path)
 
     # sample data
@@ -228,14 +234,14 @@ if __name__ == "__main__":
     ## generate random input vector of 200 tokens
     d_v = config.get("hidden_size")
     assert d_v is not None
-    sample_input = torch.randn(input_length, d_v, dtype=torch.bfloat16)
+    sample_input = torch.randn(input_length, d_v, dtype=torch.bfloat16, device=device)
 
     n_heads = config["num_attention_heads"]
     n_kvheads = config["num_key_value_heads"]
     rope_base = config["rope_theta"]
     rms_norm_eps = config["rms_norm_eps"]
 
-    loader = ModelLoader(model_path)
+    loader = ModelLoader(model_path, device=device)
 
     layer = Qwen2Layer(
         n_heads, n_kvheads, loader.load_layer(1), rope_base, rms_norm_eps

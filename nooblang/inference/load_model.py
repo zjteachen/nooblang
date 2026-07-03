@@ -9,14 +9,16 @@ import json
 
 from safetensors import safe_open
 
+from .utils import add_device_arg, resolve_device
+
 
 """
 Extracts tensors with per-layer granularity.
 """
 class ModelLoader:
-    def __init__(self, model_path):
+    def __init__(self, model_path, device: str = "cpu"):
         fname = os.path.join(model_path, "model.safetensors")
-        self.state_dict = safe_open(fname, framework="pt", device="cpu")
+        self.state_dict = safe_open(fname, framework="pt", device=device)
 
     def load_nonlayer_tensors(self):
         layer_keys = {}
@@ -50,12 +52,14 @@ def load_model_config(model_path: str) -> dict:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Loads model from hf safetensors.")
     parser.add_argument("-m", "--model-path", help="Path to model folder.")
+    add_device_arg(parser)
 
     args = parser.parse_args()
 
     model_path = args.model_path
+    device = resolve_device(args.device)
 
-    loader = ModelLoader(model_path)
+    loader = ModelLoader(model_path, device=device)
     loader.load_layer(4)
     print("others:")
     loader.load_nonlayer_tensors()

@@ -1,3 +1,31 @@
+import torch
+
+
+def add_device_arg(parser):
+    """Adds a shared -d/--device flag to an argparse parser."""
+    parser.add_argument(
+        "-d",
+        "--device",
+        choices=["gpu", "cpu"],
+        default="gpu",
+        help="Device to run inference on (default: gpu).",
+    )
+
+
+def resolve_device(device: str) -> str:
+    """Resolves a --device flag value ("gpu"/"cpu") to a torch/safetensors device string."""
+    if device == "gpu":
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "GPU requested but CUDA is not available. Pass --device cpu / -d cpu to run on CPU."
+            )
+        return "cuda"
+    elif device == "cpu":
+        return "cpu"
+    else:
+        raise ValueError(f"Unknown device '{device}', expected 'gpu' or 'cpu'.")
+
+
 def bytes_to_unicode(reverse=False):
     """
     Reference implementation for mapping bytes to unicode values
