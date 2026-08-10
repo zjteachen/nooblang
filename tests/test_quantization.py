@@ -30,13 +30,16 @@ CASES = [
 ]
 
 
-def compressed_size_bytes(quantized_tensor, dequant_data, bits):
-    """Theoretical size if the quantized tensor were packed to `bits` per
-    element, plus the dequant side info (starts/leaps) at its native dtype."""
+def tensor_bytes(t):
+    return t.numel() * t.element_size()
+
+
+def quantized_footprint_bytes(quantized_tensor, dequant_data):
+    """Actual measured memory footprint of the quantized representation:
+    the packed payload tensor plus the starts/leaps side info needed to
+    dequantize, at whatever dtypes RTNQuantizer.quantize() really returns."""
     starts_t, leaps_t = dequant_data
-    payload_bits = quantized_tensor.numel() * bits
-    overhead_bits = (starts_t.numel() + leaps_t.numel()) * starts_t.element_size() * 8
-    return (payload_bits + overhead_bits) / 8
+    return tensor_bytes(quantized_tensor) + tensor_bytes(starts_t) + tensor_bytes(leaps_t)
 
 
 def relative_error(actual, expected):
@@ -66,6 +69,8 @@ def main():
     benchmarks_changed = False
 
     failures = 0
+    total_original_bytes = 0
+    total_quantized_bytes = 0
     for i, case in enumerate(CASES):
         torch.manual_seed(0)
         name = case["name"]
@@ -76,9 +81,12 @@ def main():
 
         quantized_tensor = q.get_quantized_tensor()
 
-        original_bytes = t.numel() * t.element_size()
-        compressed_bytes = compressed_size_bytes(quantized_tensor, q.dequant_data, BITS)
+        original_bytes = tensor_bytes(t)
+        compressed_bytes = quantized_footprint_bytes(quantized_tensor, q.dequant_data)
         size_ok = compressed_bytes < original_bytes
+        savings_pct = (1 - compressed_bytes / original_bytes) * 100
+        total_original_bytes += original_bytes
+        total_quantized_bytes += compressed_bytes
 
         device_ok = quantized_tensor.device == t.device
 
@@ -101,17 +109,23 @@ def main():
             failures += 1
         print(
             f"[{i}] {status} {name:16s} "
-            f"orig_bytes={original_bytes} compressed_bytes={compressed_bytes:.0f} {note}"
+            f"orig_bytes={original_bytes} quantized_bytes={compressed_bytes:.0f} "
+            f"savings={savings_pct:.1f}% {note}"
         )
         if not size_ok:
-            print(f"     compressed size ({compressed_bytes:.0f}B) not smaller than original ({original_bytes}B)")
+            print(f"     quantized size ({compressed_bytes:.0f}B) not smaller than original ({original_bytes}B)")
         if not device_ok:
             print(f"     device mismatch: quantized on {quantized_tensor.device}, expected {t.device}")
 
     if benchmarks_changed:
         save_benchmarks(benchmarks)
 
-    print(f"\n{len(CASES) - failures}/{len(CASES)} passed")
+    overall_savings_pct = (1 - total_quantized_bytes / total_original_bytes) * 100
+    print(
+        f"\nmemory usage: {total_original_bytes}B -> {total_quantized_bytes:.0f}B "
+        f"({overall_savings_pct:.1f}% smaller, {BITS}-bit RTN, pack_size={PACK_SIZE})"
+    )
+    print(f"{len(CASES) - failures}/{len(CASES)} passed")
 
 
 if __name__ == "__main__":

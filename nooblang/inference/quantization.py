@@ -59,17 +59,35 @@ class RTNQuantizer(Quantizer):
         quantized_tensor = torch.cat(q_chunks, dim=-1)
         starts_t = torch.stack(starts, dim=-1)
         leaps_t = torch.stack(leaps, dim=-1)
-        return quantized_tensor, (starts_t, leaps_t)
+        packed_tensor = self._pack(quantized_tensor)
+        return packed_tensor, (starts_t, leaps_t)
 
     def dequantize(self, t: torch.Tensor, dequant_data, dt: torch.dtype):
         starts_t, leaps_t = dequant_data
-        q_chunks = torch.split(t, self.pack_size, dim=-1)
+        codes = self._unpack(t)
+        q_chunks = torch.split(codes, self.pack_size, dim=-1)
         starts = torch.unbind(starts_t, dim=-1)
         leaps = torch.unbind(leaps_t, dim=-1)
         chunks = []
         for q_chunk, start, leap in zip(q_chunks, starts, leaps):
             chunks.append(start + (q_chunk * leap))
         return torch.cat(chunks, dim=-1).to(dt)
+
+    def _pack(self, codes: torch.Tensor) -> torch.Tensor:
+        """Pack values_per_byte codes (0..2**bits-1) into each uint8 along the last dim."""
+        values_per_byte = 8 // self.bits
+        codes = codes.to(torch.uint8)
+        grouped = codes.reshape(*codes.shape[:-1], -1, values_per_byte)
+        shifts = (torch.arange(values_per_byte, device=codes.device) * self.bits).to(torch.uint8)
+        return (grouped << shifts).sum(dim=-1, dtype=torch.int64).to(torch.uint8)
+
+    def _unpack(self, packed: torch.Tensor) -> torch.Tensor:
+        """Inverse of _pack: expand each uint8 back into values_per_byte codes."""
+        values_per_byte = 8 // self.bits
+        mask = (1 << self.bits) - 1
+        shifts = (torch.arange(values_per_byte, device=packed.device) * self.bits).to(torch.uint8)
+        expanded = (packed.unsqueeze(-1) >> shifts) & mask
+        return expanded.reshape(*packed.shape[:-1], -1).to(torch.float32)
 
 
 
