@@ -11,8 +11,8 @@ This project is an inference server with 2 aims:
 
 Longshot goals:
 
-- Add utilities for benchmarking performance and accuracy (for testing techniques such as FP8 KV quantization, speculative decoding).
-- Add CUDA/triton backends for fused kernel support.
+- Add FP8 KV cache quantization and speculative decoding.
+- Add CUDA/triton backends for fused kernel support (needed to make weight quantization actually faster, not just smaller — see [Benchmarks](#benchmarks)).
 
 ### Achievements
 
@@ -23,6 +23,8 @@ Longshot goals:
 - Basic inference generation support — [`nooblang/inference/server.py`](nooblang/inference/server.py)
 - Prefill/decode stages with KV cache — [`nooblang/inference/layers.py`](nooblang/inference/layers.py)
 - Basic chat interface
+- 4-bit (INT4) round-to-nearest weight quantization, selectable at load time — [`nooblang/inference/quantization.py`](nooblang/inference/quantization.py), wired into [`nooblang/inference/layers.py`](nooblang/inference/layers.py)
+- Generation benchmark for tokens/s and peak VRAM, to measure the effect of changes like quantization — [`tests/benchmarks/bench_generate.py`](tests/benchmarks/bench_generate.py)
 
 ### Compatibility
 Currently tested on:
@@ -44,5 +46,33 @@ Basic invocation:
 python -m nooblang.inference.server [args]
 ```
 Arguments:
-`-m, --model-path [path-to-safetensors]`: (required) path to the directory containing the model in safetensors format. 
-`-d, --device {gpu, cpu}`: device on which to run the server. Default `gpu`.
+- `-m, --model-path [path-to-safetensors]`: (required) path to the directory containing the model in safetensors format.
+- `-d, --device {gpu, cpu}`: device on which to run the server. Default `gpu`.
+- `-q, --quantization {none, INT4}`: weight quantization scheme to apply as the model loads. Default `none`.
+
+### Testing
+Correctness tests against HuggingFace `transformers` reference modules; see [`TESTING.md`](TESTING.md) for tiers.
+
+```bash
+uv run python -m tests.run_all -m /path/to/Qwen-2.5-1.5B    # checkpoint required
+uv run python -m tests.test_sampling                        # no checkpoint
+uv run python -m tests.test_quantization                    # no checkpoint
+```
+
+`test_quantization.py` checks roundtrip error vs. a recorded benchmark, device preservation, and measured memory savings (currently 83.3%).
+
+### Benchmarks
+`tests/benchmarks/bench_generate.py` measures decode tokens/s and peak VRAM for one long-response prompt.
+
+```bash
+uv run python -m tests.benchmarks.bench_generate -m /path/to/Qwen-2.5-1.5B [-q {none,INT4}] [--max-tokens N]
+```
+
+Qwen-2.5-1.5B-Instruct, RTX 3070, 150 tokens:
+
+| quantization | tokens/s (decode) | peak VRAM |
+|---|---|---|
+| `none` | ~26.9 | ~2975 MB |
+| `INT4` | ~2.8 | ~1409 MB |
+
+No fused kernel yet, so INT4 trades speed for memory. `quantize_exceptions` isn't populated from `models.py` yet, so norms get quantized too.
