@@ -3,7 +3,7 @@ import torch
 
 from .load_model import ModelLoader, load_model_config
 from .layers import Qwen2Layer
-from .utils import add_device_arg, resolve_device
+from .utils import add_device_arg, resolve_device, add_quantization_arg, resolve_quantization
 from abc import ABC
 
 
@@ -12,9 +12,10 @@ class Model(ABC):
 
 
 class Qwen2_5(Model):
-    def __init__(self, model_path: str, device: str = "cpu") -> None:
+    def __init__(self, model_path: str, device: str = "cpu", quantization=None) -> None:
         self.device = device
-        loader = ModelLoader(model_path, device=device)
+        self.quantization = quantization
+        loader = ModelLoader(model_path, device=device, quantization=quantization)
         config = load_model_config(model_path)
 
         n_heads = config["num_attention_heads"]
@@ -31,7 +32,9 @@ class Qwen2_5(Model):
         for i in range(num_layers):
             tensors = loader.load_layer(i)
             self.layers.append(
-                Qwen2Layer(n_heads, n_kvheads, tensors, rope_base, self.rms_norm_eps)
+                Qwen2Layer(
+                    n_heads, n_kvheads, tensors, rope_base, self.rms_norm_eps, self.quantization
+                )
             )
 
     def prefill(self, tokens):
@@ -80,12 +83,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Loads model from hf safetensors.")
     parser.add_argument("-m", "--model-path", help="Path to model folder.")
     add_device_arg(parser)
+    add_quantization_arg(parser)
 
     args = parser.parse_args()
     model_path = args.model_path
     device = resolve_device(args.device)
+    quantization = resolve_quantization(args.quantization)
 
-    model = Qwen2_5(model_path, device=device)
+    model = Qwen2_5(model_path, device=device, quantization=quantization)
     config = load_model_config(model_path)
     vocab_size = config["vocab_size"]
 

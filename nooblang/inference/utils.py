@@ -1,5 +1,7 @@
 import torch
 
+from .quantization import RTNQuantizer
+
 
 def add_device_arg(parser):
     """Adds a shared -d/--device flag to an argparse parser."""
@@ -24,6 +26,28 @@ def resolve_device(device: str) -> str:
         return "cpu"
     else:
         raise ValueError(f"Unknown device '{device}', expected 'gpu' or 'cpu'.")
+
+
+def add_quantization_arg(parser):
+    """Adds a shared -q/--quantization flag to an argparse parser."""
+    parser.add_argument(
+        "-q",
+        "--quantization",
+        choices=["none", "INT4"],
+        default="none",
+        help="Weight quantization scheme to use (default: none).",
+    )
+
+
+def resolve_quantization(quantization: str):
+    """Resolves a --quantization flag value ("none"/"INT4") to a Quantizer
+    instance (or None) for the model loader to use."""
+    if quantization == "none":
+        return None
+    elif quantization == "INT4":
+        return RTNQuantizer(bits=4)
+    else:
+        raise ValueError(f"Unknown quantization scheme '{quantization}', expected 'none' or 'INT4'.")
 
 
 def bytes_to_unicode(reverse=False):

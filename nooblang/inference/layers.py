@@ -1,4 +1,5 @@
 import argparse
+import re
 import torch
 import math
 
@@ -7,7 +8,7 @@ from .load_model import ModelLoader, load_model_config
 from .utils import add_device_arg, resolve_device
 from .quantization import Quantizer, QuantizedTensor
 from torch.nn import functional as F
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from jaxtyping import Float
 
 
@@ -25,7 +26,8 @@ class Qwen2Layer:
         tensors: Dict[str, torch.Tensor],
         rope_base: float,
         rms_norm_eps: float,
-        quantizer: Optional[Quantizer]
+        quantizer: Optional[Quantizer],
+        quantize_exceptions: Optional[List[str]] = None,
     ) -> None:
         self.n_heads = n_heads
         self.n_kvheads = n_kvheads
@@ -37,28 +39,33 @@ class Qwen2Layer:
 
         self.tensors: Dict[str, torch.Tensor | QuantizedTensor] = tensors
 
+        # Keys (or regex patterns) exempted from quantization, e.g. norm gains
+        # and biases where 4-bit RTN error is disproportionately large.
+        self.quantize_exceptions = quantize_exceptions or []
+
         self.use_quantizer = quantizer is not None
         if self.use_quantizer:
-            self.tensors = dict((key, QuantizedTensor(t, quantizer)) for key, t in self.tensors.items())
+            self.tensors = dict(
+                (key, t if self._is_quantize_exception(key) else QuantizedTensor(t, quantizer))
+                for key, t in self.tensors.items()
+            )
         # TODO: check structure of layer against model config.
 
+    def _is_quantize_exception(self, key: str) -> bool:
+        return any(re.fullmatch(pattern, key) for pattern in self.quantize_exceptions)
+
+    def _get_tensor(self, key: str) -> torch.Tensor:
+        t = self.tensors[key]
+        return t.dequantize() if isinstance(t, QuantizedTensor) else t
+
     def attention(self, input_seq, causal_mask, new_kvcache=False):
-        if self.use_quantizer:
-            B_K = self.tensors["self_attn.k_proj.bias"].dequantize()
-            W_K = self.tensors["self_attn.k_proj.weight"].dequantize()
-            B_Q = self.tensors["self_attn.q_proj.bias"].dequantize()
-            W_Q = self.tensors["self_attn.q_proj.weight"].dequantize()
-            B_V = self.tensors["self_attn.v_proj.bias"].dequantize()
-            W_V = self.tensors["self_attn.v_proj.weight"].dequantize()
-            W_O = self.tensors["self_attn.o_proj.weight"].dequantize()
-        else:
-            B_K = self.tensors["self_attn.k_proj.bias"]
-            W_K = self.tensors["self_attn.k_proj.weight"]
-            B_Q = self.tensors["self_attn.q_proj.bias"]
-            W_Q = self.tensors["self_attn.q_proj.weight"]
-            B_V = self.tensors["self_attn.v_proj.bias"]
-            W_V = self.tensors["self_attn.v_proj.weight"]
-            W_O = self.tensors["self_attn.o_proj.weight"]
+        B_K = self._get_tensor("self_attn.k_proj.bias")
+        W_K = self._get_tensor("self_attn.k_proj.weight")
+        B_Q = self._get_tensor("self_attn.q_proj.bias")
+        W_Q = self._get_tensor("self_attn.q_proj.weight")
+        B_V = self._get_tensor("self_attn.v_proj.bias")
+        W_V = self._get_tensor("self_attn.v_proj.weight")
+        W_O = self._get_tensor("self_attn.o_proj.weight")
 
         Q = (
             (input_seq @ W_Q.T + B_Q)
@@ -190,14 +197,9 @@ class Qwen2Layer:
         """
         Feed data through multi-layer perceptron.
         """
-        if self.use_quantizer:
-            mlp_down = self.tensors["mlp.down_proj.weight"].dequantize()
-            mlp_gate = self.tensors["mlp.gate_proj.weight"].dequantize()
-            mlp_up = self.tensors["mlp.up_proj.weight"].dequantize()
-        else:
-            mlp_down = self.tensors["mlp.down_proj.weight"]
-            mlp_gate = self.tensors["mlp.gate_proj.weight"]
-            mlp_up = self.tensors["mlp.up_proj.weight"]
+        mlp_down = self._get_tensor("mlp.down_proj.weight")
+        mlp_gate = self._get_tensor("mlp.gate_proj.weight")
+        mlp_up = self._get_tensor("mlp.up_proj.weight")
 
         input_up = input_seq @ mlp_up.T
         input_gate = input_seq @ mlp_gate.T
@@ -214,12 +216,8 @@ class Qwen2Layer:
         if not new_kvcache:
             assert input_length == 1, "Trying to use kvcache for n>1 tokens"
 
-        if self.use_quantizer:
-            input_norm = self.tensors["input_layernorm.weight"].dequantize()
-            post_attention_norm = self.tensors["post_attention_layernorm.weight"].dequantize()
-        else:
-            input_norm = self.tensors["input_layernorm.weight"]
-            post_attention_norm = self.tensors["post_attention_layernorm.weight"]
+        input_norm = self._get_tensor("input_layernorm.weight")
+        post_attention_norm = self._get_tensor("post_attention_layernorm.weight")
         h = self.normalize(input_seq, input_norm)
         if new_kvcache:
             causal_mask = torch.full(
