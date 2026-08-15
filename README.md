@@ -59,7 +59,7 @@ uv run python -m tests.test_sampling                        # no checkpoint
 uv run python -m tests.test_quantization                    # no checkpoint
 ```
 
-`test_quantization.py` checks roundtrip error vs. a recorded benchmark, device preservation, and measured memory savings (currently 83.3%).
+`test_quantization.py` checks roundtrip error vs. a recorded benchmark, device preservation, and measured memory savings (currently 80.2%).
 
 ### Benchmarks
 `tests/benchmarks/bench_generate.py` measures decode tokens/s and peak VRAM for one long-response prompt.
@@ -72,7 +72,7 @@ Qwen-2.5-1.5B-Instruct, RTX 3070, 150 tokens:
 
 | quantization | tokens/s (decode) | peak VRAM |
 |---|---|---|
-| `none` | ~26.9 | ~2975 MB |
-| `INT4` | ~2.8 | ~1409 MB |
+| `none` | ~26.2 | ~2975 MB |
+| `INT4` | ~2.4 | ~1487 MB |
 
 No fused kernel yet, so INT4 trades speed for memory. `quantize_exceptions` isn't populated from `models.py` yet, so norms get quantized too.

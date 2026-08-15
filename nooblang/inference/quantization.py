@@ -31,34 +31,49 @@ class QuantizedTensor:
 
 
 # Implement RTN quantization.
-
+"""
+Current problem: 
+CUDA kernel assumes ceil(|t|/pack_size) different values for the dequant data (start, leap).
+This code splits each chunk along the -1 dim, so the -1 dim is split into pack size 16.
+This means that each chunk takes the entire slice across the rest of the dimensions,
+so the chunk size is not what is expected.
+"""
 class RTNQuantizer(Quantizer):
     def __init__(self, bits=4, pack_size=64):
         self.bits = bits
         self.pack_size = pack_size
 
     def quantize(self, t: torch.Tensor):
-        # split tensor in chunks of pack_size
-        chunks = torch.split(t, self.pack_size, dim=-1)
+        """
+        In this quantizer, we assign every "chunk" of pack_size values 
+        1 pair of quant/dequant values.
+        """
+        chunk_batches = torch.split(t, self.pack_size, dim=-1)
         starts = []
-        leaps = []
+        all_leaps = []
         q_chunks = []
-        for chunk in chunks:
+
+        for chunk_batch in chunk_batches:
             # get center and spread
             # get data type of tensor
-            minval = chunk.min()
-            maxval = chunk.max()
-            leap = (maxval - minval) / ((1<<self.bits) - 1)
+            minvals = chunk_batch.min(dim=-1).values
+            maxvals = chunk_batch.max(dim=-1).values
+            leaps = (maxvals - minvals) / ((1<<self.bits) - 1)
 
             # quantize tensor
-            q_chunks.append(((chunk - minval) / leap).round())
-            starts.append(minval)
-            leaps.append(leap)
-
+            adj = lambda a: a.unsqueeze(dim=-1) # match dequant value dim with chunk_batch
+            q_chunks.append(((chunk_batch - adj(minvals)) / adj(leaps)).round())
+            starts.append(minvals)
+            all_leaps.append(leaps)
+        
+        # result:
+        # q_chunks is a list of tensors of shape (..., t.dim(-1)/pack_size), except
+        # for the last one which may have a smaller last dim.
+        # leaps and starts shape are 1 less dimension than t. |leaps| = ceil(t.dim(-1) / pack_size)
         # reshape q_chunks and reformat starts & leaps -> tensors
         quantized_tensor = torch.cat(q_chunks, dim=-1)
         starts_t = torch.stack(starts, dim=-1)
-        leaps_t = torch.stack(leaps, dim=-1)
+        leaps_t = torch.stack(all_leaps, dim=-1)
         packed_tensor = self._pack(quantized_tensor)
         return packed_tensor, (starts_t, leaps_t)
 
@@ -70,7 +85,7 @@ class RTNQuantizer(Quantizer):
         leaps = torch.unbind(leaps_t, dim=-1)
         chunks = []
         for q_chunk, start, leap in zip(q_chunks, starts, leaps):
-            chunks.append(start + (q_chunk * leap))
+            chunks.append(start.unsqueeze(dim=-1) + (q_chunk * leap.unsqueeze(dim=-1)))
         return torch.cat(chunks, dim=-1).to(dt)
 
     def _pack(self, codes: torch.Tensor) -> torch.Tensor:
