@@ -61,15 +61,26 @@ class Qwen2Layer:
 
     def attention(self, input_seq, causal_mask, new_kvcache=False):
         B_K = self._get_tensor("self_attn.k_proj.bias")
-        W_K = self._get_tensor("self_attn.k_proj.weight")
+        W_K = self._get_tensor("self_attn.k_proj.weight", auto_dequantize=False)
         B_Q = self._get_tensor("self_attn.q_proj.bias")
-        W_Q = self._get_tensor("self_attn.q_proj.weight")
+        W_Q = self._get_tensor("self_attn.q_proj.weight", auto_dequantize=False)
         B_V = self._get_tensor("self_attn.v_proj.bias")
-        W_V = self._get_tensor("self_attn.v_proj.weight")
-        W_O = self._get_tensor("self_attn.o_proj.weight")
-
+        W_V = self._get_tensor("self_attn.v_proj.weight", auto_dequantize=False)
+        W_O = self._get_tensor("self_attn.o_proj.weight", auto_dequantize=False)
+        
+        if self.use_quantizer:
+            W = [W_Q, W_K, W_V]
+            B = [B_Q, B_K, B_V]
+            rawQ, rawK, rawV = [
+                fused_matmul_quant_unquant(w, input_seq, transpose_b=True).T + b
+                for w, b in zip(W, B)
+            ]
+        else:
+            rawQ = input_seq @ W_Q.T + B_Q
+            rawK = input_seq @ W_K.T + B_K
+            rawV = input_seq @ W_V.T + B_V
         Q = (
-            (input_seq @ W_Q.T + B_Q)
+            rawQ
             .view(-1, self.n_heads, self.k_dim)
             .transpose(0, 1)
         )
@@ -77,13 +88,13 @@ class Qwen2Layer:
         if new_kvcache:
             self.kvcache_len = len(input_seq)
             K = (
-                (input_seq @ W_K.T + B_K)
+                rawK
                 .view(-1, self.n_kvheads, self.k_dim)
                 .transpose(0, 1)
             )
 
             V = (
-                (input_seq @ W_V.T + B_V)
+                rawV
                 .view(-1, self.n_kvheads, self.k_dim)
                 .transpose(0, 1)
             )
@@ -93,13 +104,13 @@ class Qwen2Layer:
             V = self.kvcache.V
             
             new_K = (
-                (input_seq @ W_K.T + B_K)
+                rawK
                 .view(-1, self.n_kvheads, self.k_dim)
                 .transpose(0, 1)
             )
 
             new_V = (
-                (input_seq @ W_V.T + B_V)
+                rawV
                 .view(-1, self.n_kvheads, self.k_dim)
                 .transpose(0, 1)
             )
@@ -132,13 +143,16 @@ class Qwen2Layer:
         scores = F.softmax(scores, dim=-1, dtype=torch.bfloat16)
 
         scores = (scores @ V_rep).transpose(0, 1).reshape(-1, self.k_dim * self.n_heads)
-        scores = scores @ W_O.T
+        if self.use_quantizer:
+            scores = fused_matmul_quant_unquant(W_O, scores, transpose_b=True).T
+        else:
+            scores = scores @ W_O.T
 
         # update kvcache with the full (old + new) K/V used above
         self.kvcache.K = K
         self.kvcache.V = V
 
-        return scores
+        return scores.contiguous()
 
     def apply_rope(self, tensor):
         """

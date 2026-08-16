@@ -133,11 +133,16 @@ def main():
     device = resolve_device(args.device)
     quantization = resolve_quantization(args.quantization)
 
-    if device == "cuda":
-        torch.cuda.reset_peak_memory_stats()
-
     tokenizer = Tokenizer(args.model_path)
     model = Qwen2_5(args.model_path, device=device, quantization=quantization)
+
+    # Reset *after* loading, not before: loading (RTNQuantizer.quantize()
+    # materializes a full-size unpacked intermediate per weight) has its own
+    # peak that's unrelated to - and was masking - generation-time memory
+    # usage. We want the latter, since that's what changes with e.g. kernel
+    # fusion work.
+    if device == "cuda":
+        torch.cuda.reset_peak_memory_stats()
 
     result = run_benchmark(
         model,
