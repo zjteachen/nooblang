@@ -7,6 +7,8 @@ correctness check (see ../test_*.py for those).
 """
 
 import argparse
+import json
+import os
 import time
 
 import torch
@@ -26,6 +28,54 @@ DEFAULT_PROMPT = (
     "message in a bottle. Include dialogue and give it a clear beginning, "
     "middle, and end."
 )
+
+# GPU-only: peak VRAM isn't measured on CPU, and CPU tokens/s live on a
+# different scale, so regression tracking only applies to --device gpu.
+BENCHMARK_PATH = os.path.join(os.path.dirname(__file__), "generation_benchmark.json")
+TOKENS_PER_SEC_TOLERANCE = 0.85  # fail if tokens/s drops below 85% of the recorded baseline
+PEAK_VRAM_TOLERANCE = 1.10  # fail if peak VRAM grows past 110% of the recorded baseline
+
+
+def load_benchmarks():
+    if not os.path.exists(BENCHMARK_PATH):
+        return {}
+    with open(BENCHMARK_PATH) as f:
+        return json.load(f)
+
+
+def save_benchmarks(benchmarks):
+    with open(BENCHMARK_PATH, "w") as f:
+        json.dump(benchmarks, f, indent=2, sort_keys=True)
+
+
+def check_regression(quantization, result, device):
+    """Compares result against the recorded baseline for this quantization
+    mode, recording a new baseline on first run. Returns (ok, note)."""
+    if device != "cuda":
+        return True, "regression check skipped (requires --device gpu)"
+
+    benchmarks = load_benchmarks()
+    tokens_per_sec = result["tokens_per_sec"]
+    peak_vram_mb = result["peak_vram_bytes"] / (1024 ** 2)
+
+    if quantization not in benchmarks:
+        benchmarks[quantization] = dict(tokens_per_sec=tokens_per_sec, peak_vram_mb=peak_vram_mb)
+        save_benchmarks(benchmarks)
+        return True, f"no benchmark yet, recorded tokens/s={tokens_per_sec:.2f} peak_vram={peak_vram_mb:.1f}MB as baseline (review this)"
+
+    baseline = benchmarks[quantization]
+    tokens_per_sec_floor = baseline["tokens_per_sec"] * TOKENS_PER_SEC_TOLERANCE
+    peak_vram_ceiling = baseline["peak_vram_mb"] * PEAK_VRAM_TOLERANCE
+
+    speed_ok = tokens_per_sec >= tokens_per_sec_floor
+    memory_ok = peak_vram_mb <= peak_vram_ceiling
+    ok = speed_ok and memory_ok
+
+    note = (
+        f"tokens/s={tokens_per_sec:.2f} (floor={tokens_per_sec_floor:.2f}, baseline={baseline['tokens_per_sec']:.2f}) "
+        f"peak_vram={peak_vram_mb:.1f}MB (ceiling={peak_vram_ceiling:.1f}MB, baseline={baseline['peak_vram_mb']:.1f}MB)"
+    )
+    return ok, note
 
 
 def run_benchmark(model, tokenizer, prompt, device, max_tokens=400, temperature=0.7, top_p=0.8):
@@ -109,6 +159,12 @@ def main():
         print(f"peak VRAM: {result['peak_vram_bytes'] / (1024 ** 2):.1f} MB")
     else:
         print("peak VRAM: n/a (running on cpu)")
+
+    ok, note = check_regression(args.quantization, result, device)
+    status = "OK  " if ok else "FAIL"
+    print(f"[regression] {status} {note}")
+    if not ok:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
