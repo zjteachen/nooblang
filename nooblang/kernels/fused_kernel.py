@@ -14,13 +14,21 @@ _ext = load(
 )
 
 
-def fused_matmul_quant_unquant(qt: QuantizedTensor, B: torch.Tensor) -> torch.Tensor:
+def fused_matmul_quant_unquant(
+    qt: QuantizedTensor, B: torch.Tensor, transpose_b: bool = False
+) -> torch.Tensor:
     """
     Dequantize qt on the fly and multiply by B, fused, on GPU.
     qt wraps A's packed INT4 codes + (starts, leaps); see QuantizedTensor /
     RTNQuantizer in quantization.py for what each field holds and how they
     were produced.
+
+    If transpose_b is True, B is passed in its native (N, K) layout (e.g. an
+    activation tensor as-is, no .T needed) and the kernel reads it transposed
+    internally - no materializing .T().contiguous() copy required.
     """
-    starts, leaps = qt.get_dequant_data()  # which QuantizedTensor field holds this pair? (quantization.py:17-20)
-    A = qt.get_quantized_tensor()  # which accessor gives you the packed codes themselves?
-    return _ext.fused_matmul_quant_unquant(A, B, starts, leaps, qt.quantizer.pack_size)
+    starts, leaps = qt.get_dequant_data()
+    A = qt.get_quantized_tensor()
+    return _ext.fused_matmul_quant_unquant(
+        A, B, starts, leaps, qt.quantizer.pack_size, transpose_b
+    )

@@ -18,10 +18,16 @@ typedef unsigned char uchar;
 
 /*
  * A represents an MxK array, but it is quantized so that each pair of int4s is
- * in a single uchar. B is KxN. Given also is a tensor of start values/leap
+ * in a single uchar. Given also is a tensor of start values/leap
  * values for dequantization. |start| = |leap| = (M*K)/pack_size.
+ *
+ * B is logically KxN. If TRANS_B is false, B is physically stored KxN
+ * row-major (the caller already materialized the transpose). If TRANS_B is
+ * true, B is physically stored NxK row-major (its native, pre-transpose
+ * layout, e.g. an activation tensor passed as-is), and this kernel reads it
+ * transposed itself - no caller-side .T().contiguous() copy needed.
  */
-template <typename T>
+template <typename T, bool TRANS_B>
 __global__ void
 fused_matmul_quant_unquant_INT4(const uchar *A, const T *B, T *C, T *starts,
                                 T *leaps, int pack_size, int M, int N, int K) {
@@ -72,8 +78,12 @@ fused_matmul_quant_unquant_INT4(const uchar *A, const T *B, T *C, T *starts,
     // load in B chunk, offset by row n.
     int b_col = true_c;
     int b_row = k + threadIdx.y;
+    // TRANS_B is a compile-time constant (one template instantiation per
+    // value), so this collapses to a single fixed index formula, not a
+    // per-thread runtime branch.
+    int b_phys_idx = TRANS_B ? (b_col * K + b_row) : (b_row * N + b_col);
     b[threadIdx.x][threadIdx.y] =
-        (b_row < K && b_col < N) ? B[b_row * N + b_col] : static_cast<T>(0);
+        (b_row < K && b_col < N) ? B[b_phys_idx] : static_cast<T>(0);
     __syncthreads();
 
     // After the shared memory processing, the shared memory should satisfy *1
@@ -92,7 +102,7 @@ fused_matmul_quant_unquant_INT4(const uchar *A, const T *B, T *C, T *starts,
 
 __global__ void fused_matmul_quant_quant_INT4() {}
 
-template <typename T>
+template <typename T, bool TRANS_B>
 void launch_fused_matmul_quant_unquant_INT4(const uchar *A, const T *B, T *C,
                                             T *starts, T *leaps, int pack_size,
                                             int M, int N, int K,
@@ -101,14 +111,15 @@ void launch_fused_matmul_quant_unquant_INT4(const uchar *A, const T *B, T *C,
   dim3 blocksPerGrid((N + BLOCK_COLS - 1) / BLOCK_COLS,
                      (M + BLOCK_ROWS - 1) / BLOCK_ROWS);
 
-  fused_matmul_quant_unquant_INT4<T>
+  fused_matmul_quant_unquant_INT4<T, TRANS_B>
       <<<blocksPerGrid, threadsPerBlock, 0, stream>>>(A, B, C, starts, leaps,
                                                       pack_size, M, N, K);
 }
 
 torch::Tensor fused_matmul_quant_unquant(torch::Tensor A, torch::Tensor B,
                                          torch::Tensor starts,
-                                         torch::Tensor leaps, int pack_size) {
+                                         torch::Tensor leaps, int pack_size,
+                                         bool transpose_b) {
   TORCH_CHECK(A.is_cuda() && B.is_cuda() && starts.is_cuda() && leaps.is_cuda(),
               "all tensors must be on CUDA");
   TORCH_CHECK(A.is_contiguous() && B.is_contiguous(),
@@ -118,20 +129,31 @@ torch::Tensor fused_matmul_quant_unquant(torch::Tensor A, torch::Tensor B,
               "B, starts, and leaps must share one compute dtype");
 
   int M = A.size(0);
-  int N = B.size(1);
   int K = A.size(1) * 2;
-  TORCH_CHECK(B.size(0) == K,
-              "B's leading dimension must match A's unpacked width");
+  // transpose_b == false: B is physically (K, N) - the layout the kernel
+  // reads directly. transpose_b == true: B is physically (N, K), its native
+  // pre-transpose layout, and the kernel reads it transposed on the fly.
+  int N = transpose_b ? B.size(0) : B.size(1);
+  int b_reduction_dim = transpose_b ? B.size(1) : B.size(0);
+  TORCH_CHECK(b_reduction_dim == K,
+              "B's reduction dimension must match A's unpacked width");
 
   auto C = torch::empty({M, N}, B.options());
 
   AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::BFloat16, at::ScalarType::Half, B.scalar_type(),
       "fused_matmul_quant_unquant_INT4", [&] {
-        launch_fused_matmul_quant_unquant_INT4<scalar_t>(
-            A.data_ptr<uchar>(), B.data_ptr<scalar_t>(), C.data_ptr<scalar_t>(),
-            starts.data_ptr<scalar_t>(), leaps.data_ptr<scalar_t>(), pack_size,
-            M, N, K, at::cuda::getCurrentCUDAStream());
+        if (transpose_b) {
+          launch_fused_matmul_quant_unquant_INT4<scalar_t, true>(
+              A.data_ptr<uchar>(), B.data_ptr<scalar_t>(), C.data_ptr<scalar_t>(),
+              starts.data_ptr<scalar_t>(), leaps.data_ptr<scalar_t>(), pack_size,
+              M, N, K, at::cuda::getCurrentCUDAStream());
+        } else {
+          launch_fused_matmul_quant_unquant_INT4<scalar_t, false>(
+              A.data_ptr<uchar>(), B.data_ptr<scalar_t>(), C.data_ptr<scalar_t>(),
+              starts.data_ptr<scalar_t>(), leaps.data_ptr<scalar_t>(), pack_size,
+              M, N, K, at::cuda::getCurrentCUDAStream());
+        }
       });
 
   return C;
@@ -139,5 +161,7 @@ torch::Tensor fused_matmul_quant_unquant(torch::Tensor A, torch::Tensor B,
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("fused_matmul_quant_unquant", &fused_matmul_quant_unquant,
-        "Fused INT4-dequant x unquantized matmul");
+        "Fused INT4-dequant x unquantized matmul", py::arg("A"), py::arg("B"),
+        py::arg("starts"), py::arg("leaps"), py::arg("pack_size"),
+        py::arg("transpose_b") = false);
 }

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from .load_model import ModelLoader, load_model_config
 from .utils import add_device_arg, resolve_device
 from .quantization import Quantizer, QuantizedTensor
+from nooblang.kernels.fused_kernel import fused_matmul_quant_unquant
 from torch.nn import functional as F
 from typing import Dict, List, Optional
 from jaxtyping import Float
@@ -54,9 +55,9 @@ class Qwen2Layer:
     def _is_quantize_exception(self, key: str) -> bool:
         return any(re.fullmatch(pattern, key) for pattern in self.quantize_exceptions)
 
-    def _get_tensor(self, key: str) -> torch.Tensor:
+    def _get_tensor(self, key: str, auto_dequantize: bool = True) -> torch.Tensor:
         t = self.tensors[key]
-        return t.dequantize() if isinstance(t, QuantizedTensor) else t
+        return t.dequantize() if isinstance(t, QuantizedTensor) and auto_dequantize else t
 
     def attention(self, input_seq, causal_mask, new_kvcache=False):
         B_K = self._get_tensor("self_attn.k_proj.bias")
@@ -197,14 +198,19 @@ class Qwen2Layer:
         """
         Feed data through multi-layer perceptron.
         """
-        mlp_down = self._get_tensor("mlp.down_proj.weight")
-        mlp_gate = self._get_tensor("mlp.gate_proj.weight")
-        mlp_up = self._get_tensor("mlp.up_proj.weight")
+        mlp_down = self._get_tensor("mlp.down_proj.weight", auto_dequantize=False)
+        mlp_gate = self._get_tensor("mlp.gate_proj.weight", auto_dequantize=False)
+        mlp_up = self._get_tensor("mlp.up_proj.weight", auto_dequantize=False)
+        if self.use_quantizer:
+            input_up = fused_matmul_quant_unquant(mlp_up, input_seq, transpose_b=True)
+            input_gate = fused_matmul_quant_unquant(mlp_gate, input_seq, transpose_b=True)
+            return fused_matmul_quant_unquant(mlp_down, input_up * F.silu(input_gate)).T
+        else:
 
-        input_up = input_seq @ mlp_up.T
-        input_gate = input_seq @ mlp_gate.T
+            input_up = input_seq @ mlp_up.T
+            input_gate = input_seq @ mlp_gate.T
 
-        return (input_up * F.silu(input_gate)) @ mlp_down.T
+            return (input_up * F.silu(input_gate)) @ mlp_down.T
 
     def normalize(self, input_seq, gain):
         return torch.rms_norm(
