@@ -48,6 +48,40 @@ def relative_error(actual, expected):
     return diff.mean().item() / scale
 
 
+KERNEL_CASE = dict(name="fused_kernel_matmul", M=256, K=512, N=128, dtype=torch.float32)
+
+
+def test_fused_kernel(device, benchmarks):
+    """Compare nooblang.kernels.fused_kernel.fused_matmul_quant_unquant against
+    a plain dequantize-then-matmul reference. Only runs on CUDA (the kernel
+    requires CUDA tensors); returns (ran, ok, note)."""
+    if not (str(device).startswith("cuda") and torch.cuda.is_available()):
+        return False, True, "skipped (requires --device cuda)"
+
+    from nooblang.kernels.fused_kernel import fused_matmul_quant_unquant
+
+    torch.manual_seed(0)
+    name = KERNEL_CASE["name"]
+    M, K, N, dtype = KERNEL_CASE["M"], KERNEL_CASE["K"], KERNEL_CASE["N"], KERNEL_CASE["dtype"]
+    A = torch.randn(M, K, dtype=dtype, device=device)
+    B = torch.randn(K, N, dtype=dtype, device=device)
+
+    quantizer = RTNQuantizer(bits=BITS, pack_size=PACK_SIZE)
+    qt = QuantizedTensor(A, quantizer)
+
+    expected = qt.dequantize().float() @ B.float()
+    actual = fused_matmul_quant_unquant(qt, B)
+    error = relative_error(actual, expected)
+
+    if name not in benchmarks:
+        benchmarks[name] = error
+        return True, True, f"no benchmark yet, recorded error={error:.6f} as baseline (review this)"
+
+    threshold = benchmarks[name] * BENCHMARK_TOLERANCE
+    ok = error <= threshold
+    return True, ok, f"error={error:.6f} threshold={threshold:.6f}"
+
+
 def load_benchmarks():
     if not os.path.exists(BENCHMARK_PATH):
         return {}
@@ -117,6 +151,18 @@ def main():
         if not device_ok:
             print(f"     device mismatch: quantized on {quantized_tensor.device}, expected {t.device}")
 
+    kernel_ran, kernel_ok, kernel_note = test_fused_kernel(args.device, benchmarks)
+    if kernel_ran:
+        benchmarks_changed = benchmarks_changed or "no benchmark yet" in kernel_note
+        if not kernel_ok:
+            failures += 1
+        status = "OK  " if kernel_ok else "FAIL"
+        print(f"[k] {status} {KERNEL_CASE['name']:16s} {kernel_note}")
+    else:
+        print(f"[k] SKIP {KERNEL_CASE['name']:16s} {kernel_note}")
+
+    total_cases = len(CASES) + (1 if kernel_ran else 0)
+
     if benchmarks_changed:
         save_benchmarks(benchmarks)
 
@@ -125,7 +171,7 @@ def main():
         f"\nmemory usage: {total_original_bytes}B -> {total_quantized_bytes:.0f}B "
         f"({overall_savings_pct:.1f}% smaller, {BITS}-bit RTN, pack_size={PACK_SIZE})"
     )
-    print(f"{len(CASES) - failures}/{len(CASES)} passed")
+    print(f"{total_cases - failures}/{total_cases} passed")
 
 
 if __name__ == "__main__":

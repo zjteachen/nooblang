@@ -29,6 +29,9 @@ class QuantizedTensor:
     def get_quantized_tensor(self) -> torch.Tensor:
         return self.quantized_tensor
 
+    def get_dequant_data(self):
+        return self.dequant_data
+
 
 # Implement RTN quantization.
 """
